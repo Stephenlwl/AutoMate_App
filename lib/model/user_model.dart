@@ -1,22 +1,17 @@
-class CarOwnerData {
-  // Personal
+class CarOwner {
   final String name;
   final String email;
   final String phone;
   final String password;
-
-  // Vehicle
   final String brand;
   final String model;
   final String year;
   final String vin;
   final String plateNumber;
-
-  // Verification
   final String idImageUrl;
   final String carProofImageUrl;
 
-  CarOwnerData({
+  CarOwner({
     required this.name,
     required this.email,
     required this.phone,

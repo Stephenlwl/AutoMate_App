@@ -34,12 +34,17 @@ class StepProgressBar extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 stepLabel(index),
+                textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12,
                   color: isActive ? orange : gray,
                   fontWeight: FontWeight.w500,
+                  height: 1.3,
                 ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
+
             ],
           ),
         );
