@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/export.dart';
+import 'package:automate_application/model/service_center_service_package_offer_model.dart';
 
 /// CryptoJS-compatible AES decryption
 class CryptoJSCompat {
@@ -87,17 +88,28 @@ class ServiceCenter {
   final String postalCode;
   final String city;
   final String state;
-  final double? latitude;
-  final double? longitude;
+  double? latitude;
+  double? longitude;
   double? distance;
-  final double rating;
-  final int reviewCount;
+  double rating;
+  int reviewCount;
   List<String> services;
+  List<ServicePackage> packages;
   final List<Map<String, dynamic>> specialClosures;
   final List<Map<String, dynamic>> operatingHours;
   final String serviceCenterPhoto;
   final String verificationStatus;
   final DateTime updatedAt;
+  bool? isOnline;
+  String? responseTime;
+
+  set setRating(double newRating) {
+    rating = newRating;
+  }
+
+  set setReviewCount(int newCount) {
+    reviewCount = newCount;
+  }
 
   ServiceCenter({
     required this.id,
@@ -122,6 +134,9 @@ class ServiceCenter {
     required this.verificationStatus,
     required this.updatedAt,
     this.services = const [],
+    this.packages = const [],
+    this.isOnline,
+    this.responseTime,
   });
 
   factory ServiceCenter.fromFirestore(String id, Map<String, dynamic> data) {
@@ -280,6 +295,9 @@ class ServiceCenter {
         updatedAt: (data['updatedAt'] as Timestamp).toDate(),
         distance: null,
         services: [],
+        packages: [],
+        isOnline: data['isOnline'] ?? false,
+        responseTime: data['responseTime'] ?? null,
       );
     } catch (e, stackTrace) {
       debugPrint(

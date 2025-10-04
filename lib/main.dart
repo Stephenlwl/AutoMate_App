@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'pages/auth/login_page.dart';
 import 'pages/auth/register/personal_details_page.dart';
 import 'pages/auth/register/registration_pending_page.dart';
@@ -8,13 +9,22 @@ import 'pages/homepage/homepage.dart';
 import 'pages/services/search_services_page.dart';
 import 'pages/services/book_services_page.dart';
 import 'pages/services/search_service_center_page.dart';
-import 'pages/chat/chat_page.dart';
+import 'pages/chat/customer_support_chat_page.dart';
+import 'services/notification_service.dart';
+import 'blocs/notification_bloc.dart';
 import 'firebase_options.dart';
 import 'package:stream_chat_flutter/stream_chat_flutter.dart';
+import 'package:automate_application/pages/notification/notification.dart';
+import 'package:automate_application/globals/navigation_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase first
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  // Then initialize notifications (requires Firebase to be initialized)
+  await NotificationService().initialize();
 
   // Create chat client once
   final chatClient = StreamChatClient(
@@ -22,7 +32,16 @@ void main() async {
     logLevel: Level.INFO,
   );
 
-  runApp(MyApp(chatClient: chatClient));
+  runApp(
+    MultiBlocProvider(
+      providers: [
+        BlocProvider<NotificationBloc>(
+          create: (context) => NotificationBloc(),
+        ),
+      ],
+      child: MyApp(chatClient: chatClient),
+    ),
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -38,6 +57,7 @@ class MyApp extends StatelessWidget {
         ),
       ),
       child: MaterialApp(
+        navigatorKey: navigatorKey,
         title: 'AutoMate - Car Repair Service',
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFFFF6B00)),
@@ -76,7 +96,7 @@ class MyApp extends StatelessWidget {
             if (args != null && args['userId'] != null && args['channel'] != null) {
               final userId = args['userId'] as String;
               final channel = args['channel'] as Channel;
-              return ChatPage(userId: userId, channel: channel);
+              return CustomerSupportChatPage(channel: channel);
             }
             return const Scaffold(
               body: Center(child: Text('Channel information missing')),
@@ -118,6 +138,8 @@ class MyApp extends StatelessWidget {
           '/register/personal': (context) => const PersonalDetailsPage(),
           '/register/pending': (context) => const RegistrationPendingPage(),
           '/forgot-password': (context) => const ForgotPasswordPage(),
+          // Add notification page route
+          '/notifications': (context) => const NotificationsPage(),
         },
       ),
     );

@@ -6,7 +6,9 @@ class ServiceCenterServiceOffer {
   final String categoryId;
   final String serviceId;
   final String? tierId;
+  final String servicePackageId;
 
+  String? serviceCenterName;
   final List<String> makes;
   final Map<String, List<String>> models;
   final Map<String, List<String>> years;
@@ -34,7 +36,9 @@ class ServiceCenterServiceOffer {
     required this.serviceCenterId,
     required this.categoryId,
     required this.serviceId,
+    required this.servicePackageId,
     this.tierId,
+    this.serviceCenterName,
     required this.makes,
     required this.models,
     required this.years,
@@ -113,8 +117,10 @@ class ServiceCenterServiceOffer {
       serviceCenterId: parseString(data['serviceCenterId']),
       categoryId: parseString(data['categoryId']),
       serviceId: parseString(data['serviceId']),
+      servicePackageId: parseString(data['servicePackageId']),
       tierId: data['tierId'] != null ? parseString(data['tierId']) : null,
 
+      serviceCenterName: parseString(data['serviceCenterName']),
       makes: parseStringList(data['makes']),
       models: parseStringMap(data['models']),
       years: parseStringMap(data['years']),
@@ -145,6 +151,7 @@ class ServiceCenterServiceOffer {
       'serviceCenterId': serviceCenterId,
       'categoryId': categoryId,
       'serviceId': serviceId,
+      'servicePackageId': servicePackageId,
       'tierId': tierId,
       'makes': makes,
       'models': models,

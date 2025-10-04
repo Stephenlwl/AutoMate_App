@@ -3,6 +3,8 @@ import 'package:automate_application/widgets/custom_snackbar.dart';
 import 'package:automate_application/utils/validators.dart';
 import 'package:automate_application/services/auth_service.dart';
 import 'package:stream_chat_flutter/stream_chat_flutter.dart';
+import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -17,7 +19,10 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   final _formKey = GlobalKey<FormState>();
 
   final AuthService _authService = AuthService();
+  final LocalAuthentication auth = LocalAuthentication();
 
+  bool _canCheckBiometrics = false;
+  bool _biometricEnabled = false;
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _rememberMe = false;
@@ -35,6 +40,80 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _setupAnimations();
+    _loadRememberedCredentials();
+    _checkBiometricSupport();
+  }
+
+  Future<void> _checkBiometricSupport() async {
+    final canCheck = await auth.canCheckBiometrics;
+    setState(() => _canCheckBiometrics = canCheck);
+  }
+
+  Future<void> _biometricLogin() async {
+    try {
+      final email = _emailController.text.trim();
+
+      if (email.isEmpty) {
+        CustomSnackBar.show(
+          context: context,
+          message: 'Enter your email first to use biometric login',
+          type: SnackBarType.warning,
+        );
+        return;
+      }
+
+      final enabled = await _isBiometricEnabledForUser(email);
+      if (!enabled) {
+        CustomSnackBar.show(
+          context: context,
+          message:
+              'Biometric login not enabled for this account. Login once manually first.',
+          type: SnackBarType.warning,
+        );
+        return;
+      }
+
+      final didAuthenticate = await auth.authenticate(
+        localizedReason: 'Verify your identity',
+        options: const AuthenticationOptions(biometricOnly: true),
+      );
+
+      if (didAuthenticate) {
+        if (_passwordController.text.trim().isEmpty) {
+          CustomSnackBar.show(
+            context: context,
+            message: 'Enter your password to continue',
+            type: SnackBarType.info,
+          );
+        } else {
+          _handleLogin();
+        }
+      }
+    } catch (e) {
+      debugPrint('Biometric login failed: $e');
+      if (mounted) {
+        CustomSnackBar.show(
+          context: context,
+          message: 'Biometric login failed: $e',
+          type: SnackBarType.error,
+        );
+      }
+    }
+  }
+
+  void _onEmailChanged(String email) async {
+    final enabled = await _isBiometricEnabledForUser(email);
+    setState(() => _biometricEnabled = enabled);
+  }
+
+  Future<void> _enableBiometricForUser(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('biometric_enabled_$email', true);
+  }
+
+  Future<bool> _isBiometricEnabledForUser(String email) async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('biometric_enabled_$email') ?? false;
   }
 
   void _setupAnimations() {
@@ -56,6 +135,23 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     );
 
     _animationController.forward();
+  }
+
+  Future<void> _loadRememberedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedEmail = prefs.getString('saved_email');
+    final remember = prefs.getBool('remember_me') ?? false;
+
+    if (remember) {
+      setState(() {
+        _rememberMe = true;
+        if (savedEmail != null) _emailController.text = savedEmail;
+      });
+      if (savedEmail != null && savedEmail.isNotEmpty) {
+        final enabled = await _isBiometricEnabledForUser(savedEmail);
+        setState(() => _biometricEnabled = enabled);
+      }
+    }
   }
 
   @override
@@ -86,7 +182,55 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         final userName = result.userName;
         final userEmail = result.userEmail;
 
+        final biometricEnabled = await _isBiometricEnabledForUser(email);
+        if (!biometricEnabled && _canCheckBiometrics) {
+          final enable =
+              await showDialog<bool>(
+                context: context,
+                builder: (context) {
+                  return AlertDialog(
+                    title: const Text('Enable Biometric Login?'),
+                    content: const Text(
+                      'Would you like to enable fingerprint/face authentication for faster and more secure login next time?',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Skip'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Enable'),
+                      ),
+                    ],
+                  );
+                },
+              ) ??
+              false;
+
+          if (enable) {
+            await _enableBiometricForUser(email);
+            CustomSnackBar.show(
+              context: context,
+              message: 'Biometric login enabled for future logins',
+              type: SnackBarType.success,
+            );
+          }
+        }
+
         await _connectUser(userId, userName ?? 'Guest', userEmail);
+
+        // await _saveCredentials(email, password);
+
+        // if the user checked on the remember me then only trigger the remember me
+        final prefs = await SharedPreferences.getInstance();
+        if (_rememberMe) {
+          await prefs.setString('saved_email', email);
+          await prefs.setBool('remember_me', true);
+        } else {
+          await prefs.remove('saved_email');
+          await prefs.setBool('remember_me', false);
+        }
 
         if (mounted) {
           CustomSnackBar.show(
@@ -317,12 +461,21 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         child: Column(
           children: [
             _buildEmailField(),
-            const SizedBox(height: 16),
-            _buildPasswordField(),
-            const SizedBox(height: 12),
-            _buildRememberMeAndForgotPassword(),
-            const SizedBox(height: 20),
-            _buildLoginButton(),
+            if (!_biometricEnabled) ...[
+              const SizedBox(height: 16),
+              _buildPasswordField(),
+              const SizedBox(height: 12),
+              _buildRememberMeAndForgotPassword(),
+              const SizedBox(height: 20),
+              _buildLoginButton(),
+            ] else ...[
+              const SizedBox(height: 16),
+              _buildPasswordField(),
+              const SizedBox(height: 12),
+              _buildRememberMeAndForgotPassword(),
+              const SizedBox(height: 20),
+              _buildLoginWithBiometrics(),
+            ],
           ],
         ),
       ),
@@ -332,6 +485,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   Widget _buildEmailField() {
     return TextFormField(
       controller: _emailController,
+      onChanged: _onEmailChanged,
       keyboardType: TextInputType.emailAddress,
       validator: Validators.email,
       decoration: _inputDecoration(
@@ -435,25 +589,61 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
           ),
           elevation: 3,
         ),
-        child:
-            _isLoading
-                ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.2,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                  ),
-                )
-                : const Text(
-                  'Sign In',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.3,
-                    color: Colors.white,
-                  ),
-                ),
+        child: _isLoading
+            ? const SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.2,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+          ),
+        )
+            : const Text(
+          'Sign In',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoginWithBiometrics() {
+    if (!_canCheckBiometrics) return const SizedBox.shrink();
+
+    return SizedBox(
+      width: double.infinity,
+      height: 52,
+      child: ElevatedButton(
+        onPressed: _isLoading ? null : _biometricLogin,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primaryColor,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          elevation: 3,
+        ),
+        child: _isLoading
+            ? const SizedBox(
+          width: 22,
+          height: 22,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.2,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+          ),
+        )
+            : const Text(
+          'Sign In',
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.3,
+            color: Colors.white,
+          ),
+        ),
       ),
     );
   }

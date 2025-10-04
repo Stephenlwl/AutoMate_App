@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:automate_application/pages/chat/chat_page.dart';
+import 'package:automate_application/pages/chat/customer_support_chat_page.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
@@ -12,8 +12,20 @@ import 'package:automate_application/services/auth_service.dart';
 import 'package:automate_application/services/otp_register_account.dart';
 import 'registration_pending_page.dart';
 
+class AppColors {
+  static const Color primaryColor = Color(0xFFFF6B00);
+  static const Color secondaryColor = Color(0xFF1F2A44);
+  static const Color backgroundColor = Color(0xFFF8FAFC);
+  static const Color cardColor = Colors.white;
+  static const Color successColor = Color(0xFF10B981);
+  static const Color warningColor = Color(0xFFF59E0B);
+  static const Color errorColor = Color(0xFFEF4444);
+  static const Color infoColor = Color(0xFF3B82F6);
+}
+
 class VerificationPage extends StatefulWidget {
-  final String name, password, brand, model, year, vin, plateNumber;
+  final String name, password, brand, model, year, displacement, sizeClass, vin, plateNumber;
+  final String? fuelType;
 
   const VerificationPage({
     super.key,
@@ -22,6 +34,9 @@ class VerificationPage extends StatefulWidget {
     required this.brand,
     required this.model,
     required this.year,
+    required this.fuelType,
+    required this.displacement,
+    required this.sizeClass,
     required this.vin,
     required this.plateNumber,
   });
@@ -38,13 +53,13 @@ class _VerificationPageState extends State<VerificationPage>
 
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
+  final _carOwnerNameController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   final _picker = ImagePicker();
   final TextEditingController _otpController = TextEditingController();
   File? icFile, selfieFile, vocFile;
   Uint8List? icWeb, selfieWeb, vocWeb;
   bool _isSubmitting = false;
-  int _otpRemainingSeconds = 0;
 
   static const Color primaryColor = Color(0xFFFF6B00);
   static const Color secondaryColor = Color(0xFF344370);
@@ -243,6 +258,7 @@ class _VerificationPageState extends State<VerificationPage>
 
     final email = _emailController.text.trim();
     final phone = _phoneController.text.trim();
+    final carOwnerName = _carOwnerNameController.text.trim();
 
     if (icFile == null || selfieFile == null || vocFile == null) {
       CustomSnackBar.show(
@@ -282,10 +298,14 @@ class _VerificationPageState extends State<VerificationPage>
         email: email,
         role: 'car owner',
         phone: phone,
+        carOwnerName: carOwnerName,
         password: widget.password,
-        brand: widget.brand,
+        make: widget.brand,
         model: widget.model,
         year: widget.year,
+        fuelType: widget.fuelType,
+        displacement: widget.displacement,
+        sizeClass: widget.sizeClass,
         vin: widget.vin,
         plateNumber: widget.plateNumber,
         icImage: icFile,
@@ -550,9 +570,8 @@ class _VerificationPageState extends State<VerificationPage>
     String label,
     String type,
     File? file,
-    Uint8List? webData,
   ) {
-    final uploaded = file != null || webData != null;
+    final uploaded = file != null;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -771,15 +790,19 @@ class _VerificationPageState extends State<VerificationPage>
               validator: _validatePhone,
             ),
 
-            const SizedBox(height: 28),
-            _buildUploadButton("Identity Card (IC)", "ic", icFile, null),
-            _buildUploadButton("Selfie with IC", "selfie", selfieFile, null),
-            _buildUploadButton(
-              "Vehicle Ownership Card (VOC)",
-              "voc",
-              vocFile,
-              null,
+            const SizedBox(height:20),
+
+            _buildInputField(
+              controller: _carOwnerNameController,
+              label: 'Car Owner Name',
+              hint: 'Enter the car owner name',
+              icon: Icons.person,
             ),
+
+            const SizedBox(height: 28),
+            _buildUploadButton("Identity Card (IC) of the Car Owner", "ic", icFile),
+            _buildUploadButton("Your selfie with IC", "selfie", selfieFile),
+            _buildUploadButton("Vehicle Ownership Card (VOC)", "voc", vocFile),
             const SizedBox(height: 32),
 
             // submission button

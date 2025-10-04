@@ -25,14 +25,19 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
   String? _selectedBrand;
   String? _selectedModel;
   String? _selectedYear;
+  String? _selectedSizeClass;
+  String? _selectedFuelType;
+  String? _displacement;
 
   List<String> _brands = [];
   List<String> _models = [];
   List<String> _years = [];
+  List<String> _sizeClasses = [];
 
   bool _isLoadingBrands = true;
   bool _isLoadingModels = false;
   bool _isLoadingYears = false;
+  bool _isLoadingSizeClasses = false;
   bool _isSubmitting = false;
 
   late AnimationController _animationController;
@@ -90,15 +95,14 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
   Future<void> _fetchCarBrands() async {
     setState(() => _isLoadingBrands = true);
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .orderBy('createdAt', descending: true)
-          .get();
+      final snapshot =
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .orderBy('createdAt', descending: true)
+              .get();
 
-      final brands = snapshot.docs
-          .map((doc) => doc['make'].toString())
-          .toSet()
-          .toList();
+      final brands =
+          snapshot.docs.map((doc) => doc['make'].toString()).toSet().toList();
 
       brands.sort();
       setState(() => _brands = brands);
@@ -117,20 +121,20 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
   Future<void> _fetchCarModels(String brand) async {
     setState(() => _isLoadingModels = true);
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .where('make', isEqualTo: brand)
-          .orderBy('createdAt', descending: true)
-          .get();
+      final snapshot =
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: brand)
+              .orderBy('createdAt', descending: true)
+              .get();
 
       final models = <String>{};
 
       for (var doc in snapshot.docs) {
         final modelArray = List.from(doc['model'] ?? []);
         for (var m in modelArray) {
-          final fitments = (m['fitments'] is List)
-              ? List.from(m['fitments'])
-              : [];
+          final fitments =
+              (m['fitments'] is List) ? List.from(m['fitments']) : [];
           final hasApproved = fitments.any((f) => f['status'] == 'approved');
           if (hasApproved) {
             models.add(m['name']);
@@ -139,8 +143,7 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
       }
 
       setState(() {
-        _models = models.toList()
-          ..sort();
+        _models = models.toList()..sort();
         _selectedModel = null;
         _selectedYear = null;
         _years.clear();
@@ -160,11 +163,12 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
   Future<void> _fetchCarYears(String brand, String modelName) async {
     setState(() => _isLoadingYears = true);
     try {
-      final snapshot = await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .where('make', isEqualTo: brand)
-          .orderBy('createdAt', descending: true)
-          .get();
+      final snapshot =
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: brand)
+              .orderBy('createdAt', descending: true)
+              .get();
 
       final years = <String>{};
 
@@ -183,8 +187,9 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
       }
 
       setState(() {
-        _years = years.toList()
-          ..sort((a, b) => int.parse(b).compareTo(int.parse(a)));
+        _years =
+            years.toList()
+              ..sort((a, b) => int.parse(b).compareTo(int.parse(a)));
         _selectedYear = null;
       });
     } catch (e) {
@@ -198,10 +203,123 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
     }
   }
 
+  Future<void> _fetchCarSizeClasses(
+    String brand,
+    String modelName,
+    String year,
+  ) async {
+    setState(() => _isLoadingSizeClasses = true);
+    try {
+      final snapshot =
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: brand)
+              .orderBy('createdAt', descending: true)
+              .get();
+
+      final sizeClasses = <String>{};
+
+      for (var doc in snapshot.docs) {
+        final modelArray = List.from(doc['model'] ?? []);
+        for (var m in modelArray) {
+          if (m['name'] == modelName) {
+            final fitments = List.from(m['fitments'] ?? []);
+            for (var f in fitments) {
+              if (f['status'] == 'approved' && f['year'] == year && f['sizeClass'] != null) {
+                sizeClasses.add(f['sizeClass'].toString());
+              }
+            }
+          }
+        }
+      }
+
+      setState(() {
+        _sizeClasses = sizeClasses.toList()..sort();
+
+        if (_sizeClasses.length == 1) {
+          _selectedSizeClass = _sizeClasses.first;
+        } else if (_selectedSizeClass != null && !_sizeClasses.contains(_selectedSizeClass)) {
+          // Reset if previous selection is no longer valid
+          _selectedSizeClass = null;
+        }
+      });
+    } catch (e) {
+      CustomSnackBar.show(
+        context: context,
+        message: 'Failed to load size classes for $brand $modelName',
+        type: SnackBarType.error,
+      );
+    } finally {
+      setState(() => _isLoadingSizeClasses = false);
+    }
+  }
+
+  Future<void> _detectDisplacementAndFuelType(String make, String model, String? year) async {
+    try {
+      setState(() => _isLoadingSizeClasses = true);
+
+      final snapshot = await FirebaseFirestore.instance
+          .collection('vehicles_list')
+          .where('make', isEqualTo: make)
+          .get();
+
+      final sizeClasses = <String>{};
+      String? foundDisplacement;
+      String? foundFuelType;
+
+      for (var doc in snapshot.docs) {
+        final modelArray = List.from(doc['model'] ?? []);
+        for (var m in modelArray) {
+          if (m['name'] == model) {
+            final fitments = List.from(m['fitments'] ?? []);
+            for (var f in fitments) {
+              if (f['status'] == 'approved' && f['year'] == year) {
+                if (f['sizeClass'] != null) {
+                  sizeClasses.add(f['sizeClass'].toString());
+                }
+                if (foundDisplacement == null && f['displacement'] != null) {
+                  var displacement = f['displacement'].toString();
+                  // Remove square brackets if displacement is an array string
+                  if (displacement.startsWith('[') && displacement.endsWith(']')) {
+                    displacement = displacement.substring(1, displacement.length - 1);
+                  }
+                  foundDisplacement = displacement;
+                }
+                if (foundFuelType == null && f['fuel'] != null) {
+                  foundFuelType = f['fuel'].toString();
+                }
+              }
+            }
+          }
+        }
+      }
+
+      setState(() {
+        _sizeClasses = sizeClasses.toList()..sort();
+        _displacement = foundDisplacement;
+        _selectedFuelType = foundFuelType;
+        if (_sizeClasses.length == 1) {
+          _selectedSizeClass = _sizeClasses.first;
+        }
+        _isLoadingSizeClasses = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingSizeClasses = false);
+      _showErrorSnackBar('Failed to load size classes');
+    }
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
   String? _validateVin(String? value) {
-    if (value == null || value
-        .trim()
-        .isEmpty) return 'VIN is required';
+    if (value == null || value.trim().isEmpty) return 'VIN is required';
     final clean = value.trim().toUpperCase();
     if (clean.length != 17) return 'VIN must be exactly 17 characters';
     if (!RegExp(r'^[A-HJ-NPR-Z0-9]{17}').hasMatch(clean)) {
@@ -211,14 +329,10 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
   }
 
   String? _validatePlateNumber(String? value) {
-    if (value == null || value
-        .trim()
-        .isEmpty) {
+    if (value == null || value.trim().isEmpty) {
       return 'License plate number is required';
     }
-    if (value
-        .trim()
-        .length < 3) {
+    if (value.trim().length < 3) {
       return 'License plate must be at least 3 characters';
     }
     return null;
@@ -242,13 +356,16 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
       Navigator.push(
         context,
         PageRouteBuilder(
-          pageBuilder: (context, animation, secondaryAnimation) =>
-              VerificationPage(
+          pageBuilder:
+              (context, animation, secondaryAnimation) => VerificationPage(
                 name: widget.name,
                 password: widget.password,
                 brand: _selectedBrand!,
                 model: _selectedModel!,
                 year: _selectedYear!,
+                fuelType: _selectedFuelType,
+                displacement: _displacement!,
+                sizeClass: _selectedSizeClass!,
                 vin: _vinController.text.trim().toUpperCase(),
                 plateNumber: _plateNumberController.text.trim().toUpperCase(),
               ),
@@ -257,10 +374,9 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
               position: Tween<Offset>(
                 begin: const Offset(1.0, 0.0),
                 end: Offset.zero,
-              ).animate(CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeInOut,
-              )),
+              ).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeInOut),
+              ),
               child: child,
             );
           },
@@ -279,9 +395,7 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery
-        .of(context)
-        .size;
+    final screenSize = MediaQuery.of(context).size;
     final isSmallScreen = screenSize.height < 700;
 
     return Scaffold(
@@ -435,8 +549,10 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
                   _selectedBrand = val;
                   _selectedModel = null;
                   _selectedYear = null;
+                  _selectedSizeClass = null;
                   _models.clear();
                   _years.clear();
+                  _sizeClasses.clear();
                 });
                 if (val != null) _fetchCarModels(val);
               },
@@ -471,9 +587,30 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
               items: _years,
               isLoading: _isLoadingYears,
               icon: Icons.calendar_today_rounded,
-              onChanged: (val) => setState(() => _selectedYear = val),
+              onChanged: (val) {
+                setState(() {
+                  _selectedYear = val;
+                  _sizeClasses.clear();
+                });
+                if (val != null)
+                  _fetchCarSizeClasses(_selectedBrand!, _selectedModel!, val);
+                  _detectDisplacementAndFuelType(_selectedBrand!, _selectedModel!, val);
+              },
               validator: (val) => val == null ? 'Select year' : null,
               enabled: _selectedModel != null,
+            ),
+
+            SizedBox(height: isSmallScreen ? 16 : 20),
+
+            _buildDropdownField(
+              label: 'Vehicle Size Class',
+              value: _selectedSizeClass,
+              items: _sizeClasses,
+              isLoading: _isLoadingSizeClasses,
+              icon: Icons.directions_car_outlined,
+              onChanged: (val) => setState(() => _selectedSizeClass = val),
+              validator: (val) => val == null ? 'Select size class' : null,
+              enabled: _selectedYear != null,
             ),
 
             SizedBox(height: isSmallScreen ? 16 : 20),
@@ -534,18 +671,16 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
           ),
         ),
         DropdownButtonFormField<String>(
-          value: value,
+          value: value != null && items.contains(value) ? value : null,
           isExpanded: true,
           decoration: InputDecoration(
-            hintText: isLoading
-                ? 'Loading...'
-                : enabled
-                ? 'Select $label'
-                : 'Please select previous option first',
-            hintStyle: TextStyle(
-              color: Colors.grey.shade500,
-              fontSize: 15,
-            ),
+            hintText:
+                isLoading
+                    ? 'Loading...'
+                    : enabled
+                    ? 'Select $label'
+                    : 'Please select previous option first',
+            hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 15),
             prefixIcon: Container(
               margin: const EdgeInsets.all(12),
               padding: const EdgeInsets.all(8),
@@ -578,35 +713,40 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
             filled: true,
             fillColor: enabled ? Colors.grey.shade50 : Colors.grey.shade100,
             contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 16),
-            suffixIcon: isLoading
-                ? Container(
-              width: 20,
-              height: 20,
-              margin: const EdgeInsets.all(14),
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                valueColor: AlwaysStoppedAnimation<Color>(primaryColor),
-              ),
-            )
-                : null,
+              horizontal: 16,
+              vertical: 16,
+            ),
+            suffixIcon:
+                isLoading
+                    ? Container(
+                      width: 20,
+                      height: 20,
+                      margin: const EdgeInsets.all(14),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(primaryColor),
+                      ),
+                    )
+                    : null,
           ),
-          items: enabled && !isLoading
-              ? items
-              .map((item) =>
-              DropdownMenuItem(
-                value: item,
-                child: Text(
-                  item,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                    color: secondaryColor,
-                  ),
-                ),
-              ))
-              .toList()
-              : [],
+          items:
+              enabled && !isLoading
+                  ? items
+                      .map(
+                        (item) => DropdownMenuItem(
+                          value: item,
+                          child: Text(
+                            item,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w500,
+                              color: secondaryColor,
+                            ),
+                          ),
+                        ),
+                      )
+                      .toList()
+                  : [],
           onChanged: enabled && !isLoading ? onChanged : null,
           validator: validator,
           icon: const Icon(
@@ -690,7 +830,9 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
             filled: true,
             fillColor: Colors.grey.shade50,
             contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16, vertical: 16),
+              horizontal: 16,
+              vertical: 16,
+            ),
             counterText: maxLength != null ? null : '',
           ),
         ),
@@ -704,16 +846,19 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
         gradient: LinearGradient(
-          colors: _isSubmitting
-              ? [Colors.grey.shade400, Colors.grey.shade500]
-              : [primaryColor, primaryColor.withOpacity(0.8)],
+          colors:
+              _isSubmitting
+                  ? [Colors.grey.shade400, Colors.grey.shade500]
+                  : [primaryColor, primaryColor.withOpacity(0.8)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
         boxShadow: [
           BoxShadow(
-            color: _isSubmitting ? Colors.transparent : primaryColor
-                .withOpacity(0.25),
+            color:
+                _isSubmitting
+                    ? Colors.transparent
+                    : primaryColor.withOpacity(0.25),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -730,23 +875,24 @@ class _VehicleInformationPageState extends State<VehicleInformationPage>
             borderRadius: BorderRadius.circular(12),
           ),
         ),
-        child: _isSubmitting
-            ? const SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2.5,
-            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-          ),
-        )
-            : const Text(
-          'Continue',
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.5,
-          ),
-        ),
+        child:
+            _isSubmitting
+                ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                )
+                : const Text(
+                  'Continue',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.5,
+                  ),
+                ),
       ),
     );
   }
