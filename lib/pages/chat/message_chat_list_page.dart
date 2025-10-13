@@ -38,6 +38,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
   final Map<String, ServiceCenter> _serviceCenters = {};
   final Map<String, bool> _serviceCenterOnlineStatus = {};
   final ChatService _chatService = ChatService();
+  bool _isLoadingServiceCenters = true;
+  bool _isAdminSupportOnline = false;
 
   @override
   void initState() {
@@ -47,6 +49,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
     _searchController.addListener(_onSearchChanged);
     _loadServiceCenters();
     _startOnlineStatusMonitoring();
+    _startAdminSupportStatusMonitoring();
   }
 
   void _setupChannelListController() {
@@ -59,7 +62,10 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         ]),
       ]),
       channelStateSort: [
-        const stream_chat.SortOption('last_message_at', direction: stream_chat.SortOption.DESC),
+        const stream_chat.SortOption(
+          'last_message_at',
+          direction: stream_chat.SortOption.DESC,
+        ),
       ],
     );
     _channelListController.doInitialLoad();
@@ -73,41 +79,89 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
   Future<void> _loadServiceCenters() async {
     try {
-      final querySnapshot = await firestore.FirebaseFirestore.instance
-          .collection('service_centers')
-          .get();
+      setState(() {
+        _isLoadingServiceCenters = true;
+      });
+
+      final querySnapshot =
+          await firestore.FirebaseFirestore.instance
+              .collection('service_centers')
+              .where('verification.status', isEqualTo: 'approved')
+              .get();
 
       for (var doc in querySnapshot.docs) {
-        final data = doc.data();
-        final serviceCenter = ServiceCenter(
-          id: doc.id,
-          name: data['serviceCenterName']?.toString() ?? 'Unknown',
-          email: data['email']?.toString() ?? 'N/A',
-          serviceCenterPhoneNo: data['serviceCenterPhoneNo']?.toString() ?? '',
-          addressLine1: data['addressLine1']?.toString() ?? 'Unknown location',
-          rating: (data['rating'] as num?)?.toDouble() ?? 0.0,
-          isOnline: false,
-          responseTime: data['responseTime']?.toString() ?? 'Within 24 hours',
-          serviceCenterPhoto: data['serviceCenterPhoto']?.toString() ?? '',
-          description: data['description']?.toString() ?? '',
-          images: List<String>.from(data['images'] ?? []),
-          postalCode: data['postalCode']?.toString() ?? '',
-          city: data['city']?.toString() ?? '',
-          state: data['state']?.toString() ?? '',
-          latitude: (data['latitude'] as num?)?.toDouble(),
-          longitude: (data['longitude'] as num?)?.toDouble(),
-          reviewCount: (data['reviewCount'] as num?)?.toInt() ?? 0,
-          specialClosures: _convertToMapList(data['specialClosures']),
-          operatingHours: _convertToMapList(data['operatingHours']),
-          verificationStatus: data['verificationStatus']?.toString() ?? '',
-          updatedAt: DateTime.now(),
-        );
-        _serviceCenters[doc.id] = serviceCenter;
+        try {
+          final data = doc.data();
+          final center = ServiceCenter.fromFirestore(doc.id, data);
+
+          // Load reviews to get actual rating and count
+          final reviewsQuery =
+              await firestore.FirebaseFirestore.instance
+                  .collection('reviews')
+                  .where('serviceCenterId', isEqualTo: center.id)
+                  .where('status', isEqualTo: 'approved')
+                  .get();
+
+          // Calculate actual rating from reviews
+          if (reviewsQuery.docs.isNotEmpty) {
+            double totalRating = 0.0;
+            for (var reviewDoc in reviewsQuery.docs) {
+              final reviewData = reviewDoc.data();
+              totalRating += (reviewData['rating'] as num).toDouble();
+            }
+            center.rating = totalRating / reviewsQuery.docs.length;
+            center.reviewCount = reviewsQuery.docs.length;
+          } else {
+            // Use default rating if no reviews
+            center.rating = data['rating'] as double? ?? 0.0;
+            center.reviewCount = data['reviewCount'] as int? ?? 0;
+          }
+
+          _serviceCenters[doc.id] = center;
+        } catch (e) {
+          debugPrint('Error processing service center ${doc.id}: $e');
+          // Create basic service center with available data
+          final data = doc.data();
+          _serviceCenters[doc.id] = ServiceCenter(
+            id: doc.id,
+            name: data['serviceCenterName']?.toString() ?? 'Service Center',
+            email: data['email']?.toString() ?? 'N/A',
+            serviceCenterPhoneNo:
+                data['serviceCenterPhoneNo']?.toString() ?? '',
+            addressLine1:
+                data['addressLine1']?.toString() ?? 'Unknown location',
+            rating: (data['rating'] as num?)?.toDouble() ?? 0.0,
+            isOnline: false,
+            responseTime: data['responseTime']?.toString() ?? 'Within 24 hours',
+            serviceCenterPhoto: data['serviceCenterPhoto']?.toString() ?? '',
+            description: data['description']?.toString() ?? '',
+            images: List<String>.from(data['images'] ?? []),
+            postalCode: data['postalCode']?.toString() ?? '',
+            city: data['city']?.toString() ?? '',
+            state: data['state']?.toString() ?? '',
+            latitude: (data['latitude'] as num?)?.toDouble(),
+            longitude: (data['longitude'] as num?)?.toDouble(),
+            reviewCount: (data['reviewCount'] as num?)?.toInt() ?? 0,
+            specialClosures: _convertToMapList(data['specialClosures']),
+            operatingHours: _convertToMapList(data['operatingHours']),
+            verificationStatus: data['verificationStatus']?.toString() ?? '',
+            updatedAt: DateTime.now(),
+          );
+        }
       }
 
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {
+          _isLoadingServiceCenters = false;
+        });
+      }
     } catch (e) {
       debugPrint('Error loading service centers: $e');
+      if (mounted) {
+        setState(() {
+          _isLoadingServiceCenters = false;
+        });
+      }
     }
   }
 
@@ -121,9 +175,33 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
   void _startOnlineStatusMonitoring() {
     _enhanceOnlineStatusMonitoring(
-        stream_chat.StreamChat.of(context).client,
-        _serviceCenterOnlineStatus
+      stream_chat.StreamChat.of(context).client,
+      _serviceCenterOnlineStatus,
     );
+  }
+
+  void _startAdminSupportStatusMonitoring() {
+    final client = stream_chat.StreamChat.of(context).client;
+
+    // Initial query
+    client.queryUsers(
+      filter: stream_chat.Filter.equal('id', 'admin-support'),
+    ).then((usersResult) {
+      if (usersResult.users.isNotEmpty && mounted) {
+        setState(() {
+          _isAdminSupportOnline = usersResult.users.first.online ?? false;
+        });
+      }
+    });
+
+    // Listen for updates
+    client.on(stream_chat.EventType.userUpdated).listen((event) {
+      if (event.user?.id == 'admin-support' && mounted) {
+        setState(() {
+          _isAdminSupportOnline = event.user!.online ?? false;
+        });
+      }
+    });
   }
 
   void _enhanceOnlineStatusMonitoring(stream_chat.StreamChatClient client, Map<String, bool> onlineStatus) {
@@ -149,7 +227,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
       final centerInfo = channel.extraData['center_info'] as Map<String, dynamic>?;
       if (centerInfo != null) {
         final centerId = centerInfo['id'] as String?;
-        if (centerId != null) {
+        if (centerId != null && _serviceCenters.containsKey(centerId)) {
           return _serviceCenters[centerId];
         }
       }
@@ -160,8 +238,38 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         final parts = channelId.split('_');
         if (parts.length >= 3) {
           final centerId = parts[2];
-          return _serviceCenters[centerId];
+          if (_serviceCenters.containsKey(centerId)) {
+            return _serviceCenters[centerId];
+          }
         }
+      }
+
+      // Last resort: check channel name or create basic service center
+      final channelName = channel.name ?? channel.extraData['name'] as String?;
+      if (channelName != null) {
+        return ServiceCenter(
+          id: channel.id!,
+          name: channelName,
+          email: '',
+          serviceCenterPhoneNo: '',
+          addressLine1: '',
+          rating: 0.0,
+          isOnline: false,
+          responseTime: '',
+          serviceCenterPhoto: '',
+          description: '',
+          images: [],
+          postalCode: '',
+          city: '',
+          state: '',
+          latitude: 0,
+          longitude: 0,
+          reviewCount: 0,
+          specialClosures: [],
+          operatingHours: [],
+          verificationStatus: '',
+          updatedAt: DateTime.now(),
+        );
       }
 
       return null;
@@ -192,9 +300,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
     return Scaffold(
       backgroundColor: AppColors.backgroundColor,
       body: NestedScrollView(
-        headerSliverBuilder: (context, innerBoxIsScrolled) => [
-          _buildSliverAppBar(),
-        ],
+        headerSliverBuilder:
+            (context, innerBoxIsScrolled) => [_buildSliverAppBar()],
         body: Column(
           children: [
             if (_isSearching) _buildSearchBar(),
@@ -203,8 +310,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
               child: TabBarView(
                 controller: _tabController,
                 children: [
-                  _buildCustomerSupportTab(),
                   _buildServiceCentersTab(),
+                  _buildCustomerSupportTab(),
                 ],
               ),
             ),
@@ -223,10 +330,6 @@ class _MessageChatListPageState extends State<MessageChatListPage>
       leading: IconButton(
         icon: Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade100,
-            borderRadius: BorderRadius.circular(12),
-          ),
           child: const Icon(
             Icons.arrow_back_ios,
             color: AppColors.secondaryColor,
@@ -251,15 +354,12 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         IconButton(
           icon: Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: _isSearching
-                  ? AppColors.primaryColor.withOpacity(0.1)
-                  : Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-            ),
             child: Icon(
               _isSearching ? Icons.close : Icons.search,
-              color: _isSearching ? AppColors.primaryColor : AppColors.secondaryColor,
+              color:
+                  _isSearching
+                      ? AppColors.primaryColor
+                      : AppColors.secondaryColor,
               size: 20,
             ),
           ),
@@ -319,8 +419,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         indicatorWeight: 3,
         labelStyle: const TextStyle(fontWeight: FontWeight.w600),
         tabs: const [
-          Tab(text: 'Customer Support'),
           Tab(text: 'Service Centers'),
+          Tab(text: 'Customer Support'),
         ],
       ),
     );
@@ -335,7 +435,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
         // Filter for admin-support channels
         if (customType == 'admin-support') {
-          return _CustomerSupportTile(channel: channel);
+          return _CustomerSupportTile(channel: channel, isAdminOnline: _isAdminSupportOnline);
         }
         return const SizedBox.shrink();
       },
@@ -346,6 +446,10 @@ class _MessageChatListPageState extends State<MessageChatListPage>
   }
 
   Widget _buildServiceCentersTab() {
+    if (_isLoadingServiceCenters) {
+      return _buildLoadingState();
+    }
+
     return stream_chat.StreamChannelListView(
       controller: _channelListController,
       itemBuilder: (context, channels, index, tile) {
@@ -473,7 +577,10 @@ class _MessageChatListPageState extends State<MessageChatListPage>
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primaryColor,
                 foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
@@ -492,10 +599,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         children: [
           CircularProgressIndicator(color: AppColors.primaryColor),
           SizedBox(height: 16),
-          Text(
-            'Loading messages...',
-            style: TextStyle(color: Colors.grey),
-          ),
+          Text('Loading messages...', style: TextStyle(color: Colors.grey)),
         ],
       ),
     );
@@ -533,10 +637,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
             Text(
               'Please check your connection and try again',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 14,
-                color: Colors.grey.shade600,
-              ),
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
@@ -612,7 +713,6 @@ class ServiceCenterChatTile extends StatelessWidget {
       builder: (context, snapshot) {
         final messages = snapshot.data ?? [];
         final lastMessage = messages.isNotEmpty ? messages.last : null;
-
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: BoxDecoration(
@@ -635,6 +735,7 @@ class ServiceCenterChatTile extends StatelessWidget {
                     serviceCenterId: serviceCenter?.id ?? '',
                     serviceCenterName: serviceCenter?.name ?? 'Service Center',
                     channel: channel,
+                    serviceCenterAvatar: serviceCenter?.serviceCenterPhoto,
                   ),
                 ),
               );
@@ -644,7 +745,7 @@ class ServiceCenterChatTile extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               child: Row(
                 children: [
-                  // Service Center Avatar - FIXED VERSION
+                  // Service Center Avatar
                   _buildServiceCenterAvatar(),
                   const SizedBox(width: 16),
 
@@ -660,7 +761,7 @@ class ServiceCenterChatTile extends StatelessWidget {
                               children: [
                                 Expanded(
                                   child: Text(
-                                    serviceCenter?.name ?? 'Service Center',
+                                    serviceCenter?.name ?? _getChannelName(),
                                     style: const TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
@@ -700,7 +801,7 @@ class ServiceCenterChatTile extends StatelessWidget {
                             ),
                           ],
                         ),
-                        if (serviceCenter?.rating != null) ...[
+                        if (serviceCenter?.rating != null && serviceCenter!.rating! > 0) ...[
                           const SizedBox(height: 4),
                           Row(
                             children: [
@@ -781,63 +882,78 @@ class ServiceCenterChatTile extends StatelessWidget {
     );
   }
 
-  Widget _buildServiceCenterAvatar() {
-    final photoUrl = serviceCenter?.serviceCenterPhoto;
-
-    if (photoUrl == null || photoUrl.isEmpty) {
-      return Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: AppColors.primaryColor,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: const Icon(
-          Icons.car_repair,
-          color: Colors.white,
-          size: 24,
-        ),
-      );
+  String _getChannelName() {
+    // Try to get name from channel data
+    final channelName = channel.name ?? channel.extraData['name'] as String?;
+    if (channelName != null && channelName.isNotEmpty) {
+      return channelName;
     }
 
-    // Handle different image types
-    if (photoUrl.startsWith('data:image')) {
-      // Base64 image
-      try {
-        final base64Str = photoUrl.split(',').last;
-        final bytes = base64.decode(base64Str);
+    // Fallback to channel ID parsing
+    final channelId = channel.id;
+    if (channelId != null && channelId.startsWith('service_center_')) {
+      return 'Service Center';
+    }
+
+    return 'Chat';
+  }
+
+  Widget _buildServiceCenterAvatar() {
+    // Try to get avatar from service center data first
+    final photoUrl = serviceCenter?.serviceCenterPhoto;
+
+    if (photoUrl != null && photoUrl.isNotEmpty) {
+      if (photoUrl.startsWith('data:image')) {
+        // Base64 image
+        try {
+          final base64Str = photoUrl.split(',').last;
+          final bytes = base64.decode(base64Str);
+          return Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              image: DecorationImage(
+                image: MemoryImage(bytes),
+                fit: BoxFit.cover,
+              ),
+            ),
+          );
+        } catch (e) {
+          debugPrint('Error decoding base64 image: $e');
+          return _buildDefaultAvatar();
+        }
+      } else if (photoUrl.startsWith('http')) {
+        // Network image
         return Container(
           width: 48,
           height: 48,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             image: DecorationImage(
-              image: MemoryImage(bytes),
+              image: NetworkImage(photoUrl),
               fit: BoxFit.cover,
             ),
           ),
         );
-      } catch (e) {
-        debugPrint('Error decoding base64 image: $e');
-        return _buildDefaultAvatar();
       }
-    } else if (photoUrl.startsWith('http')) {
-      // Network image
+    }
+    final channelImage = channel.image ?? channel.extraData['image'] as String?;
+    if (channelImage != null && channelImage.isNotEmpty) {
       return Container(
         width: 48,
         height: 48,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           image: DecorationImage(
-            image: NetworkImage(photoUrl),
+            image: NetworkImage(channelImage),
             fit: BoxFit.cover,
           ),
         ),
-        child: photoUrl.isEmpty ? _buildDefaultAvatar() : null,
       );
-    } else {
-      return _buildDefaultAvatar();
     }
+
+    return _buildDefaultAvatar();
   }
 
   Widget _buildDefaultAvatar() {
@@ -879,10 +995,12 @@ class ServiceCenterChatTile extends StatelessWidget {
   }
 }
 
+
 class _CustomerSupportTile extends StatelessWidget {
-  const _CustomerSupportTile({required this.channel});
+  const _CustomerSupportTile({required this.channel, required this.isAdminOnline});
 
   final stream_chat.Channel channel;
+  final bool isAdminOnline;
 
   @override
   Widget build(BuildContext context) {
@@ -891,7 +1009,7 @@ class _CustomerSupportTile extends StatelessWidget {
       initialData: channel.state?.messages,
       builder: (context, snapshot) {
         final messages = snapshot.data ?? [];
-        final lastMessage = messages.isNotEmpty ? messages.first : null;
+        final lastMessage = messages.isNotEmpty ? messages.last : null;
 
         return Container(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -969,11 +1087,11 @@ class _CustomerSupportTile extends StatelessWidget {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: AppColors.successColor,
+                                color: isAdminOnline ? AppColors.successColor : Colors.grey,
                                 borderRadius: BorderRadius.circular(8),
                               ),
-                              child: const Text(
-                                'ONLINE',
+                              child: Text(
+                                isAdminOnline ? 'ONLINE' : 'OFFLINE',
                                 style: TextStyle(
                                   color: Colors.white,
                                   fontSize: 10,

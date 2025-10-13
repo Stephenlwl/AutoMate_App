@@ -27,26 +27,46 @@ class ChatService {
     }
   }
 
-  // Connect user directly to Stream Chat (no backend server needed)
+  String _generateAvatarUrl(String name, {String type = 'user'}) {
+    final colors = {
+      'admin': '4A90E2',
+      'service_center': 'FF6B00',
+      'user': '8E44AD'
+    };
+
+    final color = colors[type] ?? colors['user']!;
+    final encodedName = Uri.encodeComponent(name);
+    return 'https://ui-avatars.com/api/?name=$encodedName&background=$color&color=fff&size=128&bold=true&length=2';
+  }
+
+  // Connect user directly to Stream Chat
   Future<Map<String, dynamic>> connectUser({
     required String userId,
     required String name,
     String? email,
+    String? avatar,
     String role = 'user',
   }) async {
     try {
-      // For development, we'll use client-side token generation
+      String userAvatar;
+      if (avatar != null && avatar.isNotEmpty) {
+        userAvatar = avatar;
+      } else {
+        userAvatar = _generateAvatarUrl(name, type: role);
+      }
+      // use client-side token generation
       final streamUser = User(
         id: userId,
         name: name,
         role: role,
-        image: 'https://i.imgur.com/fR9Jz14.png',
+        image: userAvatar,
         extraData: {
           'email': email ?? '',
+          'avatar': userAvatar,
         },
       );
 
-      // Use development token (for development only)
+      // Use development token
       final token = _client.devToken(userId).rawValue;
 
       await _client.connectUser(streamUser, token);
@@ -67,9 +87,9 @@ class ChatService {
     required String customerId,
     required String customerName,
     String? customerEmail,
+    String? customerAvatar,
   }) async {
     try {
-      // First try backend server if reachable
       final serverReachable = await _isServerReachable();
 
       if (serverReachable) {
@@ -81,6 +101,7 @@ class ChatService {
               'customerId': customerId,
               'customerName': customerName,
               'customerEmail': customerEmail,
+              'customerAvatar': customerAvatar,
             }),
           ).timeout(const Duration(seconds: 5));
 
@@ -95,11 +116,12 @@ class ChatService {
         }
       }
 
-      // Fallback: Create channel directly
+      // Create channel directly
       return await _createAdminSupportChannelDirect(
         customerId: customerId,
         customerName: customerName,
         customerEmail: customerEmail,
+        customerAvatar: customerAvatar,
       );
     } catch (e) {
       debugPrint('Create support channel error: $e');
@@ -111,21 +133,24 @@ class ChatService {
     required String customerId,
     required String customerName,
     String? customerEmail,
+    String? customerAvatar,
   }) async {
     final channelId = 'admin_support_$customerId';
 
-    // For direct channel creation, we don't need to create users separately
-    // Stream Chat will handle user creation automatically when they join channels
+    final adminAvatar = _generateAvatarUrl('AutoMate Support', type: 'admin');
+    final userAvatar = customerAvatar ?? _generateAvatarUrl(customerName, type: 'user');
 
     final channel = _client.channel('messaging', id: channelId, extraData: {
       'name': 'Customer Support',
       'members': [customerId, 'admin-support'],
       'custom_type': 'admin-support',
       'created_by_id': customerId,
+      'image': adminAvatar,
       'customer_info': {
         'id': customerId,
         'name': customerName,
         'email': customerEmail,
+        'avatar': userAvatar,
       },
     });
 
@@ -135,7 +160,7 @@ class ChatService {
       return channel;
     } catch (e) {
       debugPrint('Direct channel creation error: $e');
-      // If creation fails, try to query the channel first (it might already exist)
+      // try to query the channel first if fail
       try {
         await channel.watch();
         return channel;
@@ -152,6 +177,8 @@ class ChatService {
     required String centerId,
     required String customerName,
     required String centerName,
+    String? customerAvatar,
+    String? centerAvatar,
   }) async {
     try {
       final serverReachable = await _isServerReachable();
@@ -166,6 +193,8 @@ class ChatService {
               'customerName': customerName,
               'centerId': centerId,
               'centerName': centerName,
+              'customerAvatar': customerAvatar,
+              'centerAvatar': centerAvatar,
             }),
           ).timeout(const Duration(seconds: 5));
 
@@ -181,12 +210,14 @@ class ChatService {
         }
       }
 
-      // Fallback: Direct channel creation
+      // Direct channel creation
       return await _createServiceCenterChannelDirect(
         customerId: customerId,
         centerId: centerId,
         customerName: customerName,
         centerName: centerName,
+        customerAvatar: customerAvatar,
+        centerAvatar: centerAvatar,
       );
     } catch (e) {
       debugPrint('Create service channel error: $e');
@@ -199,21 +230,28 @@ class ChatService {
     required String centerId,
     required String customerName,
     required String centerName,
+    String? customerAvatar,
+    String? centerAvatar,
   }) async {
     final channelId = 'service_center_${centerId}_${customerId}';
+    final userAvatar = customerAvatar ?? _generateAvatarUrl(customerName, type: 'user');
+    final serviceCenterAvatar = centerAvatar ?? _generateAvatarUrl(centerName, type: 'service_center');
 
     final channel = _client.channel('messaging', id: channelId, extraData: {
       'name': centerName,
       'members': [customerId, centerId],
       'custom_type': 'service-center',
       'created_by_id': customerId,
+      'image': serviceCenterAvatar,
       'customer_info': {
         'id': customerId,
         'name': customerName,
+        'avatar': userAvatar,
       },
       'center_info': {
         'id': centerId,
         'name': centerName,
+        'avatar': serviceCenterAvatar,
       },
     });
 
@@ -223,7 +261,6 @@ class ChatService {
       return channel;
     } catch (e) {
       debugPrint('Direct service channel creation error: $e');
-      // If creation fails, try to query the channel first
       try {
         await channel.watch();
         return channel;
@@ -231,6 +268,25 @@ class ChatService {
         debugPrint('Service channel watch also failed: $e2');
         rethrow;
       }
+    }
+  }
+
+  Future<void> updateUserAvatar({
+    required String userId,
+    required String avatarUrl,
+  }) async {
+    try {
+      await _client.updateUser(
+        User(
+          id: userId,
+          image: avatarUrl,
+          extraData: {
+            'avatar': avatarUrl,
+          },
+        ),
+      );
+    } catch (e) {
+      debugPrint('Update user avatar error: $e');
     }
   }
 

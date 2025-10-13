@@ -1,27 +1,12 @@
 plugins {
     id("com.android.application")
-    id("com.google.gms.google-services")
-    id("org.jetbrains.kotlin.android")
+    id("kotlin-android")
+    id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
     namespace = "com.example.automate_application"
-    compileSdk = 34
-
-    defaultConfig {
-        applicationId = "com.example.automate_application"
-        minSdk = 21
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
-    }
-
-    buildTypes {
-        getByName("release") {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
-        }
-    }
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
@@ -33,12 +18,35 @@ android {
         jvmTarget = "1.8"
     }
 
-    buildFeatures {
-        buildConfig = true
+    defaultConfig {
+        applicationId = "com.example.automate_application"
+        minSdk = flutter.minSdkVersion
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0.0"
+    }
+
+    buildTypes {
+        getByName("debug") {
+            // Explicitly disable both for debug builds
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+        }
+        getByName("release") {
+            // For release, either enable both or disable both
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+
+        }
     }
 }
 
+flutter {
+    source = "../.."
+}
+
 dependencies {
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:1.8.22")
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

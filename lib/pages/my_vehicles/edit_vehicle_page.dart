@@ -141,12 +141,11 @@ class _EditVehiclePageState extends State<EditVehiclePage> {
       updatedVehicle.addAll({
         'plateNumber': newPlateNumber,
         'vin': newVin,
-        'status': 'pending', // Set status to pending for admin review
+        'status': 'pending',
         'updatedAt': Timestamp.now(),
-        'previousStatus': widget.vehicle['status'] ?? 'approved', // Store previous status
+        'previousStatus': widget.vehicle['status'] ?? 'approved',
       });
 
-      // Add VOC data if new image was uploaded
       if (vocData != null) {
         updatedVehicle.addAll({
           'vocUrl': vocData["encrypted"],
@@ -155,19 +154,17 @@ class _EditVehiclePageState extends State<EditVehiclePage> {
         });
       }
 
-      // Remove admin note when updating (will be set by admin after review)
+      // remove admin note when updating (will be set by admin after review)
       updatedVehicle.remove('adminNote');
 
       // Update the specific vehicle in the array
       vehicles[widget.vehicleIndex] = updatedVehicle;
 
-      // Update in Firestore
       await FirebaseFirestore.instance
           .collection('car_owners')
           .doc(widget.userId)
           .update({'vehicles': vehicles});
 
-      // Show success and go back
       _showSuccessSnackBar('Vehicle updated successfully! Awaiting admin approval.');
       widget.onVehicleUpdated();
       Navigator.pop(context);
@@ -264,36 +261,6 @@ class _EditVehiclePageState extends State<EditVehiclePage> {
     }
   }
 
-  Future<void> _loadVehicles() async {
-    try {
-      setState(() {
-        _isLoading = true;
-        _error = null;
-      });
-
-      final snapshot = await FirebaseFirestore.instance
-          .collection('car_owners')
-          .doc(widget.userId)
-          .get();
-
-      if (snapshot.exists) {
-        final data = snapshot.data();
-        final List<dynamic> vehicleList = data?['vehicles'] ?? [];
-        setState(() {
-          _vehicles = vehicleList.cast<Map<String, dynamic>>();
-        });
-      }
-    } catch (e) {
-      setState(() {
-        _error = e.toString();
-      });
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
   void _showErrorSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: Colors.red),
@@ -338,7 +305,7 @@ class _EditVehiclePageState extends State<EditVehiclePage> {
               // Status Card
               if (currentStatus == 'pending') _buildStatusCard(),
 
-              // Vehicle Info (Read-only)
+              // Vehicle Info
               _buildVehicleInfoCard(),
 
               const SizedBox(height: 24),

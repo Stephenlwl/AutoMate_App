@@ -4,7 +4,8 @@ import '../../model/notification_model.dart';
 import '../../blocs/notification_bloc.dart';
 
 class NotificationsPage extends StatelessWidget {
-  const NotificationsPage({super.key});
+  const NotificationsPage({super.key, required this.userId});
+  final String userId;
 
   @override
   Widget build(BuildContext context) {
@@ -119,6 +120,7 @@ class _NotificationItem extends StatelessWidget {
     final icon = switch (type) {
       'service_booking' => Icons.build_circle_outlined,
       'towing_request' => Icons.emergency_outlined,
+      'service_reminder' => Icons.notifications_active,
       'payment' => Icons.payment_outlined,
       _ => Icons.notifications_outlined,
     };
@@ -126,6 +128,7 @@ class _NotificationItem extends StatelessWidget {
     final color = switch (type) {
       'service_booking' => Colors.orange,
       'towing_request' => Colors.red,
+      'service_reminder' => Colors.amber,
       'payment' => Colors.green,
       _ => Colors.blue,
     };

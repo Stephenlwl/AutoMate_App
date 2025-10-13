@@ -16,15 +16,13 @@ import 'firebase_options.dart';
 import 'package:stream_chat_flutter/stream_chat_flutter.dart';
 import 'package:automate_application/pages/notification/notification.dart';
 import 'package:automate_application/globals/navigation_service.dart';
+import 'pages/towing_driver/driver_homepage.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Initialize Firebase first
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
-  // Then initialize notifications (requires Firebase to be initialized)
-  await NotificationService().initialize();
 
   // Create chat client once
   final chatClient = StreamChatClient(
@@ -50,6 +48,10 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final notificationBloc = context.read<NotificationBloc>();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      NotificationService().initialize(notificationBloc);
+    });
     return StreamChatTheme(
       data: StreamChatThemeData(
         colorTheme: StreamColorTheme.dark(
@@ -89,8 +91,27 @@ class MyApp extends StatelessWidget {
               chatClient: chatClient,
               userName: userName,
               userEmail: userEmail,
+              notificationBloc: context.read<NotificationBloc>(),
             );
           },
+          '/driver/home': (context) {
+            final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+            final userId = args?['userId'] as String?;
+            final userName = args?['userName'] as String?;
+            final userEmail = args?['userEmail'] as String?;
+            final userData = args?['userData'] as Map<String, dynamic>?;
+
+            if (userId == null) {
+              return const Scaffold(
+                body: Center(child: Text('Driver ID is missing. Please restart the app.')),
+              );
+            }
+            return DriverHomePage(
+              userData: userData,
+              userId: userId,
+            );
+          },
+
           '/support-chat': (context) {
             final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
             if (args != null && args['userId'] != null && args['channel'] != null) {
@@ -138,8 +159,17 @@ class MyApp extends StatelessWidget {
           '/register/personal': (context) => const PersonalDetailsPage(),
           '/register/pending': (context) => const RegistrationPendingPage(),
           '/forgot-password': (context) => const ForgotPasswordPage(),
-          // Add notification page route
-          '/notifications': (context) => const NotificationsPage(),
+          '/login': (context) => const LoginPage(),
+          '/notifications': (context) {
+            final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+            final userId = args?['userId'] as String?;
+            if (userId == null) {
+              return const Scaffold(
+                body: Center(child: Text('User ID missing')),
+              );
+            }
+            return NotificationsPage(userId: userId);
+          }
         },
       ),
     );

@@ -1,8 +1,32 @@
-import 'package:automate_application/pages/chat/customer_support_chat_page.dart';
+import 'dart:convert';
+import 'package:automate_application/pages/service_history/service_receipt_page.dart';
+import 'package:automate_application/pages/services/service_appointment_tracking_page.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
 import 'package:automate_application/pages/service_history/service_invoice_page.dart';
+import 'package:automate_application/pages/service_history/towing_invoice_page.dart';
+import 'package:automate_application/pages/service_history/towing_receipt_page.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../services/image_decryption_service.dart';
+
+class AppColors {
+  static const Color primaryColor = Color(0xFFFF6B00);
+  static const Color primaryLight = Color(0xFFF3A169);
+  static const Color primaryDark = Color(0xFF1D4ED8);
+  static const Color secondaryColor = Color(0xFF1E293B);
+  static const Color backgroundColor = Color(0xFFF8FAFC);
+  static const Color cardColor = Colors.white;
+  static const Color surfaceColor = Color(0xFFF1F5F9);
+  static const Color accentColor = Color(0xFF06B6D4);
+  static const Color successColor = Color(0xFF10B981);
+  static const Color warningColor = Color(0xFFF59E0B);
+  static const Color errorColor = Color(0xFFEF4444);
+  static const Color textPrimary = Color(0xFF0F172A);
+  static const Color textSecondary = Color(0xFF64748B);
+  static const Color textMuted = Color(0xFF94A3B8);
+  static const Color borderColor = Color(0xFFE2E8F0);
+}
 
 class ServiceHistoryPage extends StatefulWidget {
   final String userId, userName, userEmail;
@@ -25,20 +49,13 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   List<Map<String, dynamic>> _serviceHistory = [];
   String? _error;
 
-  // Enhanced filtering options
-  String _selectedServiceType = 'all'; // 'all', 'service', 'towing'
+  String _selectedServiceType = 'all';
   String _selectedVehicle = 'all';
-  String _selectedTimeFilter = 'all'; // 'all', 'today', 'week', 'month'
+  String _selectedTimeFilter = 'all';
 
   // Vehicle list for filtering
   List<String> _userVehicles = [];
   Map<String, Map<String, dynamic>> _vehicleDetails = {};
-
-  // App Colors
-  static const Color primaryColor = Color(0xFFFF6B00);
-  static const Color secondaryColor = Color(0xFF1F2A44);
-  static const Color backgroundColor = Color(0xFFF8FAFC);
-  static const Color cardColor = Colors.white;
 
   @override
   void initState() {
@@ -97,7 +114,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
       List<Map<String, dynamic>> history = [];
 
-      // --- Service Bookings ---
+      // Service Bookings
       final bookingsSnapshot =
           await FirebaseFirestore.instance
               .collection('service_bookings')
@@ -109,6 +126,16 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         final data = doc.data();
         final vehicle = data['vehicle'] as Map<String, dynamic>? ?? {};
 
+        final paymentData = data['payment'] as Map<String, dynamic>?;
+        final paidAmount = paymentData?['total'] ?? 0.0;
+        final paymentStatus =
+            paymentData?['paymentStatus'] ?? paymentData?['status'] ?? 'unpaid';
+        final paymentMethod = paymentData?['method'];
+
+        final hasPayment =
+            paymentData != null &&
+            (paymentData['total'] != null || paymentData['paidAmount'] != null);
+
         history.add({
           'id': doc.id,
           'type': 'service',
@@ -117,13 +144,29 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             data['serviceCenterId'],
           ),
           'invoiceId': data['invoiceId'],
+          'receiptId': data['receiptId'],
           'estimatedDuration': data['estimatedDuration'],
           'status': data['status'] ?? 'unknown',
           'scheduledDate': data['scheduledDate'] as Timestamp?,
           'scheduledTime': data['scheduledTime'],
+          'totalEstAmount': data['totalEstAmount'],
+          'totalEstAmountRange': data['totalEstAmountRange'],
           'totalAmount': _calculateTotalAmount(data),
           'displayPrice': _getDisplayPrice(data),
           'services': data['services'] ?? [],
+          'subtotal': data['subtotal'],
+          'subtotalRange': data['subtotalRange'],
+          'sst': data['sst'],
+          'sstRange': data['sstRange'],
+          'totalFixedPrice': data['totalFixedPrice'],
+          'totalRangePriceMin': data['totalRangePriceMin'],
+          'totalRangePriceMax': data['totalRangePriceMax'],
+          'currentMileage': data['currentMileage'],
+          'mileageRecordedAt': data['mileageRecordedAt'],
+          'serviceMaintenances': data['serviceMaintenances'] ?? [],
+          'vehicleId': data['vehicleId'],
+          'timestamps': data['timestamps'] ?? {},
+          'statusHistory': data['statusHistory'] ?? [],
           'packages': _getAllPackages(data),
           'selectionType': data['selectionType'] ?? 'service',
           'vehicle': vehicle,
@@ -135,7 +178,10 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           ),
           'createdAt': data['createdAt'] as Timestamp?,
           'updatedAt': data['updatedAt'] as Timestamp?,
-          'paymentStatus': data['payment']?['paymentStatus'] ?? 'pending',
+          'paymentStatus': paymentStatus,
+          'paymentMethod': paymentMethod,
+          'paidAmount': paidAmount,
+          'hasPayment': hasPayment,
           'cancellation': data['cancellation'],
           'rating': data['rating'],
           'technician': data['technicianId'],
@@ -143,7 +189,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         });
       }
 
-      // --- Towing Requests ---
+      // Towing Requests
       final towingSnapshot =
           await FirebaseFirestore.instance
               .collection('towing_requests')
@@ -153,48 +199,132 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
       for (var doc in towingSnapshot.docs) {
         final data = doc.data();
+
         final vehicleInfo = _safeMapConversion(data['vehicleInfo']);
-        final timing = _safeMapConversion(data['timing']);
+        final location = _safeMapConversion(data['location']);
+        final pricingBreakdown = _safeMapConversion(data['pricingBreakdown']);
         final payment = _safeMapConversion(data['payment']);
+        final rating = _safeMapConversion(data['rating']);
+        final timestamps = _safeMapConversion(data['timestamps']);
+
+        // Get location information
+        String pickupAddress = 'Location not specified';
+        if (location['customer'] != null) {
+          final customerLocation = _safeMapConversion(location['customer']);
+          final address = _safeMapConversion(customerLocation['address']);
+          pickupAddress =
+              address['full'] ??
+              address['formatted'] ??
+              'Location not specified';
+        } else if (location['serviceCenter'] != null) {
+          // Alternative location structure
+          final serviceCenterLocation = _safeMapConversion(
+            location['serviceCenter'],
+          );
+          if (serviceCenterLocation['latitude'] != null &&
+              serviceCenterLocation['longitude'] != null) {
+            pickupAddress = 'Service Center Location';
+          }
+        }
+
+        // Payment information
+        final paymentStatus = payment['status'] ?? 'unpaid';
+        final paymentMethod = payment['method'] ?? 'N/A';
+        final paidAmount = payment['paidAmount'] ?? payment['total'] ?? 0.0;
+        final hasPayment =
+            payment.isNotEmpty && (paidAmount > 0 || paymentStatus == 'paid');
+
+        final serviceCenterContact = _safeMapConversion(
+          data['serviceCenterContact'],
+        );
+        final serviceCenterAddress =
+            serviceCenterContact['address'] is String
+                ? serviceCenterContact['address']
+                : 'Address not available';
+
+        final driverInfo = _safeMapConversion(data['driverInfo']);
+        final driverContactNumber = driverInfo['contactNumber'] ?? 'N/A';
 
         history.add({
           'id': doc.id,
           'type': 'towing',
           'status': data['status'] ?? 'unknown',
+          'invoiceId': data['invoiceId'],
+          'receiptId': data['receiptId'],
           'serviceCenterId': data['serviceCenterId'],
-          'serviceCenterName':
-              data['serviceCenterName'] ?? 'Unknown Service Center',
-          'towingType': data['towingType'] ?? 'Unknown',
-          'location': data['location'] ?? {},
-          'destination': data['destination'] ?? {},
+          'serviceCenterName': data['serviceCenterName'],
+          'serviceCenterContactNumber': serviceCenterContact['phone'],
+          'towingType': data['towingType'] ?? 'standard',
+          'location': {
+            'customer': {
+              'address': {
+                'full': pickupAddress,
+                'street': location['customer']?['address']?['street'],
+                'city': location['customer']?['address']?['city'],
+                'state': location['customer']?['address']?['state'],
+              },
+              'coordinates': location['customer']?['coordinates'],
+            },
+          },
+          'address': serviceCenterAddress,
           'vehicleInfo': vehicleInfo,
           'vehiclePlate': vehicleInfo['plateNumber'] ?? 'Unknown',
-          'driverInfo':
-              data['driverInfo'] != null
-                  ? _safeMapConversion(data['driverInfo'])
-                  : null,
-          'distance': data['distance']?.toDouble(),
-          'estimatedCost': (data['estimatedCost'] ?? 0).toDouble(),
+          'driverId': data['driverId'],
+          'driverInfo': driverInfo,
+          'driverContactNumber': driverContactNumber,
+          'driverVehicleInfo': _safeMapConversion(data['driverVehicleInfo']),
+          'distance': (data['distance'] as num?)?.toDouble(),
+          'estimatedCost': (data['estimatedCost'] as num?)?.toDouble(),
+          'finalCost': (data['finalCost'] as num?)?.toDouble(),
           'totalAmount':
-              (payment['totalAmount'] ?? data['estimatedCost'] ?? 0).toDouble(),
+              data['totalAmount'] ??
+              (data['finalCost'] as num?)?.toDouble() ??
+              (data['estimatedCost'] as num?)?.toDouble() ??
+              0.0,
           'description': data['description'] ?? '',
-          'contactNumber': data['contactNumber'] ?? '',
+          'email': data['email'] ?? '',
           'createdAt': data['createdAt'] as Timestamp?,
           'updatedAt': data['updatedAt'] as Timestamp?,
-          'requestedAt': timing['requestedAt'] as Timestamp?,
-          'assignedAt': timing['assignedAt'] as Timestamp?,
-          'completedAt': timing['completedAt'] as Timestamp?,
-          'paymentStatus': payment['paymentStatus'] ?? 'pending',
-          'cancellation': data['cancellation'],
-          'rating': data['rating'],
+          'requestedAt': timestamps['requestedAt'] as Timestamp?,
+          'assignedAt': timestamps['driverAssignedAt'] as Timestamp?,
+          'dispatchedAt': timestamps['dispatchedAt'] as Timestamp?,
+          'completedAt': timestamps['completedAt'] as Timestamp?,
+          'paymentStatus': paymentStatus,
+          'paymentMethod': paymentMethod,
+          'paidAmount': paidAmount,
+          'hasPayment': hasPayment,
+          'pricingBreakdown': pricingBreakdown,
+          'coverageArea': data['coverageArea'],
+          'responseTime': data['responseTime'],
+          'estimatedDuration': data['estimatedDuration'],
+          'statusHistory': data['statusHistory'] ?? [],
+          'rating':
+              rating.isNotEmpty
+                  ? {
+                    'stars':
+                        rating['serviceRating'] ??
+                        rating['driverRating'] ??
+                        rating['stars'],
+                    'comment': rating['comments'] ?? rating['comment'],
+                  }
+                  : null,
+          'cancellation':
+              data['cancellationReason'] != null
+                  ? {
+                    'reason': data['cancellationReason'],
+                    'cancelledBy': data['cancelledBy'] ?? 'customer',
+                    'cancelledAt': timestamps['cancelledAt'] as Timestamp?,
+                  }
+                  : null,
         });
       }
-
-      // Sort by creation date
+      // Sort by creation date by most recent first
       history.sort((a, b) {
         final aDate = a['createdAt'] as Timestamp?;
         final bDate = b['createdAt'] as Timestamp?;
-        if (aDate == null || bDate == null) return 0;
+        if (aDate == null && bDate == null) return 0;
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
         return bDate.compareTo(aDate);
       });
 
@@ -207,60 +337,97 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         _error = 'Failed to load service history: $e';
         _isLoading = false;
       });
+      debugPrint('Error loading service history: $e');
     }
   }
 
   double _calculateTotalAmount(Map<String, dynamic> data) {
     try {
-      if (data['totalAmount'] != null && data['totalAmount'] > 0) {
-        return (data['totalAmount'] as num).toDouble();
+      // Check for total estimated amount first
+      if (data['totalEstAmount'] != null && data['totalEstAmount'] > 0) {
+        return (data['totalEstAmount'] as num).toDouble();
       }
 
+      // Check for total fixed price
       if (data['totalFixedPrice'] != null && data['totalFixedPrice'] > 0) {
         return (data['totalFixedPrice'] as num).toDouble();
       }
 
-      // Calculate from packages and services
-      double total = 0;
-      final packages = _getAllPackages(data);
-      final services = data['services'] as List? ?? [];
-
-      for (var pkg in packages) {
-        if (pkg['fixedPrice'] != null && pkg['fixedPrice'] > 0) {
-          total += (pkg['fixedPrice'] as num).toDouble();
-        }
+      // Check for range pricing - use min as base
+      if (data['totalRangePriceMin'] != null &&
+          data['totalRangePriceMin'] > 0) {
+        return (data['totalRangePriceMin'] as num).toDouble();
       }
 
-      for (var service in services) {
-        if (service['serviceTotal'] != null && service['serviceTotal'] > 0) {
-          total += (service['serviceTotal'] as num).toDouble();
-        } else if (service['totalFixedPrice'] != null &&
-            service['totalFixedPrice'] > 0) {
-          total += (service['totalFixedPrice'] as num).toDouble();
-        } else {
-          final labour = (service['labourPrice'] as num?)?.toDouble() ?? 0;
-          final parts = (service['partPrice'] as num?)?.toDouble() ?? 0;
-          total += labour + parts;
-        }
+      // Calculate from subtotal + SST
+      final subtotal = data['subtotal'] as num?;
+      final sst = data['sst'] as num?;
+
+      if (subtotal != null && sst != null) {
+        return subtotal.toDouble() + sst.toDouble();
       }
 
-      return total;
+      // Fallback to subtotal only
+      if (subtotal != null && subtotal > 0) {
+        return subtotal.toDouble();
+      }
+
+      return 0.0;
     } catch (e) {
+      debugPrint('Error calculating total amount: $e');
       return 0.0;
     }
   }
 
   String _getDisplayPrice(Map<String, dynamic> data) {
-    final totalRangePrice = data['totalRangePrice'] as String?;
-    final totalAmount = _calculateTotalAmount(data);
+    // Check for range pricing first
+    final totalEstAmountRange = data['totalEstAmountRange'] as String?;
+    final totalRangePriceMin = data['totalRangePriceMin'] as num?;
+    final totalRangePriceMax = data['totalRangePriceMax'] as num?;
 
-    if (totalRangePrice != null && totalRangePrice.isNotEmpty) {
-      return totalRangePrice;
-    } else if (totalAmount > 0) {
-      return 'RM${totalAmount.toStringAsFixed(2)}';
-    } else {
-      return 'Price upon inspection';
+    // Check for fixed pricing
+    final totalEstAmount = data['totalEstAmount'] as num?;
+    final totalFixedPrice = data['totalFixedPrice'] as num?;
+    final subtotal = data['subtotal'] as num?;
+    final sst = data['sst'] as num?;
+
+    // If there's a range amount string
+    if (totalEstAmountRange != null && totalEstAmountRange.isNotEmpty) {
+      return totalEstAmountRange;
     }
+
+    // If have min/max range values
+    if (totalRangePriceMin != null &&
+        totalRangePriceMax != null &&
+        totalRangePriceMin > 0 &&
+        totalRangePriceMax > totalRangePriceMin) {
+      return 'RM${totalRangePriceMin.toStringAsFixed(2)} - RM${totalRangePriceMax.toStringAsFixed(2)}';
+    }
+
+    // If have total estimated amount
+    if (totalEstAmountRange == null ||
+        totalEstAmountRange.isEmpty ||
+        totalEstAmountRange == "") {
+      if (totalEstAmount != null && totalEstAmount > 0) {
+        return 'RM${totalEstAmount.toStringAsFixed(2)}';
+      } else if (totalFixedPrice != null && totalFixedPrice > 0) {
+        return 'RM${totalFixedPrice.toStringAsFixed(2)}';
+      }
+    } else {
+      return 'RM${totalEstAmount}';
+    }
+
+    // If have total fixed price
+    if (totalFixedPrice != null && totalFixedPrice > 0) {
+      return 'RM${totalFixedPrice.toStringAsFixed(2)}';
+    }
+
+    // Calculate from subtotal + SST if available
+    if (subtotal != null && sst != null && subtotal > 0) {
+      final total = subtotal.toDouble() + sst.toDouble();
+      return 'RM${total.toStringAsFixed(2)}';
+    }
+    return 'RM0.00';
   }
 
   List<Map<String, dynamic>> _getAllPackages(Map<String, dynamic> data) {
@@ -370,9 +537,9 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     final filtered = _getFilteredHistory();
 
     switch (tabIndex) {
-      case 0: // All
+      case 0:
         return filtered;
-      case 1: // Active (pending, confirmed, assigned, in_progress)
+      case 1:
         return filtered
             .where(
               (item) => [
@@ -384,7 +551,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
               ].contains(item['status']),
             )
             .toList();
-      case 2: // Ready (ready_to_collect)
+      case 2: // Ready
         return filtered
             .where((item) => item['status'] == 'ready_to_collect')
             .toList();
@@ -409,6 +576,11 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     return DateFormat('dd/MM/yyyy HH:mm').format(ts.toDate());
   }
 
+  String _formatTimestamp(Timestamp? timestamp) {
+    if (timestamp == null) return 'Not yet';
+    return DateFormat('dd MMM yyyy, HH:mm').format(timestamp.toDate());
+  }
+
   String _formatDuration(int? minutes) {
     if (minutes == null || minutes <= 0) return 'Not specified';
 
@@ -429,13 +601,11 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: backgroundColor,
+      backgroundColor: AppColors.backgroundColor,
       appBar: _buildAppBar(),
       body: Column(
         children: [
-          // Enhanced Filter Section
           _buildFilterSection(),
-
           // Main Content
           Expanded(
             child:
@@ -454,19 +624,15 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
-      backgroundColor: cardColor,
+      backgroundColor: AppColors.cardColor,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leading: IconButton(
         icon: Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade100,
-            borderRadius: BorderRadius.circular(8),
-          ),
           child: const Icon(
             Icons.arrow_back_ios_new,
-            color: secondaryColor,
+            color: AppColors.secondaryColor,
             size: 18,
           ),
         ),
@@ -475,7 +641,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       title: const Text(
         'Service History',
         style: TextStyle(
-          color: secondaryColor,
+          color: AppColors.secondaryColor,
           fontSize: 18,
           fontWeight: FontWeight.bold,
         ),
@@ -484,20 +650,20 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         IconButton(
           icon: Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(8),
+            child: const Icon(
+              Icons.refresh,
+              color: AppColors.secondaryColor,
+              size: 20,
             ),
-            child: const Icon(Icons.refresh, color: secondaryColor, size: 20),
           ),
           onPressed: _loadServiceHistory,
         ),
       ],
       bottom: TabBar(
         controller: _tabController,
-        labelColor: primaryColor,
+        labelColor: AppColors.primaryColor,
         unselectedLabelColor: Colors.grey,
-        indicatorColor: primaryColor,
+        indicatorColor: AppColors.primaryColor,
         labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
         unselectedLabelStyle: const TextStyle(
           fontWeight: FontWeight.w500,
@@ -517,7 +683,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
   Widget _buildFilterSection() {
     return Container(
-      color: cardColor,
+      color: AppColors.cardColor,
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
@@ -633,12 +799,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          CircularProgressIndicator(color: primaryColor),
+          CircularProgressIndicator(color: AppColors.primaryColor),
           SizedBox(height: 16),
           Text(
             'Loading service history...',
             style: TextStyle(
-              color: secondaryColor,
+              color: AppColors.secondaryColor,
               fontSize: 16,
               fontWeight: FontWeight.w500,
             ),
@@ -675,7 +841,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             ElevatedButton(
               onPressed: _loadServiceHistory,
               style: ElevatedButton.styleFrom(
-                backgroundColor: primaryColor,
+                backgroundColor: AppColors.primaryColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -726,7 +892,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                     },
                   ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: primaryColor,
+                backgroundColor: AppColors.primaryColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(
                   horizontal: 24,
@@ -772,7 +938,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     }
 
     return RefreshIndicator(
-      color: primaryColor,
+      color: AppColors.primaryColor,
       onRefresh: _loadServiceHistory,
       child: ListView.builder(
         padding: const EdgeInsets.all(16),
@@ -788,6 +954,77 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   }
 
   Widget _buildServiceCard(Map<String, dynamic> booking) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream:
+          FirebaseFirestore.instance
+              .collection('service_bookings')
+              .doc(booking['id'] as String)
+              .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildServiceCardContent(booking);
+        }
+
+        if (snapshot.hasError) {
+          debugPrint('Stream error: ${snapshot.error}');
+          return _buildServiceCardContent(booking);
+        }
+
+        if (!snapshot.hasData || !snapshot.data!.exists) {
+          return _buildServiceCardContent(booking);
+        }
+
+        final latestData = snapshot.data!.data() as Map<String, dynamic>?;
+        if (latestData == null) {
+          return _buildServiceCardContent(booking);
+        }
+
+        // Create updated booking with real-time data but preserve computed fields
+        final updatedBooking = Map<String, dynamic>.from(booking);
+
+        // Update only the fields that change in real-time
+        updatedBooking['status'] = latestData['status'] ?? booking['status'];
+        updatedBooking['updatedAt'] =
+            latestData['updatedAt'] ?? booking['updatedAt'];
+
+        // Update payment status
+        if (latestData['payment'] != null) {
+          updatedBooking['paymentStatus'] =
+              latestData['payment']['paymentStatus'] ??
+              latestData['payment']['status'];
+        }
+
+        // Update status history if available
+        if (latestData['statusHistory'] != null) {
+          updatedBooking['statusHistory'] = latestData['statusHistory'];
+        }
+
+        // Update timestamps if available
+        if (latestData['timestamps'] != null) {
+          updatedBooking['timestamps'] = latestData['timestamps'];
+        }
+
+        // Update invoice ID if generated
+        if (latestData['invoiceId'] != null) {
+          updatedBooking['invoiceId'] = latestData['invoiceId'];
+        }
+
+        // Update rating if added
+        if (latestData['rating'] != null) {
+          updatedBooking['rating'] = latestData['rating'];
+        }
+
+        // Update cancellation if exists
+        if (latestData['cancellation'] != null) {
+          updatedBooking['cancellation'] = latestData['cancellation'];
+        }
+
+        return _buildServiceCardContent(updatedBooking);
+      },
+    );
+  }
+
+  Widget _buildServiceCardContent(Map<String, dynamic> booking) {
     final status = booking['status'] as String? ?? 'unknown';
     final statusColor = _getStatusColor(status);
     final statusText = _getStatusText(status);
@@ -803,7 +1040,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        color: cardColor,
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -856,13 +1093,13 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                     vertical: 4,
                   ),
                   decoration: BoxDecoration(
-                    color: primaryColor.withOpacity(0.1),
+                    color: AppColors.primaryColor.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     'SERVICE',
                     style: TextStyle(
-                      color: primaryColor,
+                      color: AppColors.primaryColor,
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
                     ),
@@ -886,7 +1123,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Service Center - FIXED: Proper null handling
+                // Service Center
                 Row(
                   children: [
                     Icon(Icons.business, size: 16, color: Colors.grey.shade600),
@@ -898,7 +1135,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
-                          color: secondaryColor,
+                          color: AppColors.secondaryColor,
                         ),
                       ),
                     ),
@@ -953,7 +1190,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
                 // Progress indicators for active services
                 if (isActive) _buildServiceProgress(booking),
-
+                const SizedBox(height: 12),
                 // Price and additional info
                 Container(
                   width: double.infinity,
@@ -969,7 +1206,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
-                            'Total Amount:',
+                            'Est.Total Amount:',
                             style: TextStyle(
                               fontSize: 14,
                               color: Colors.grey.shade700,
@@ -977,28 +1214,73 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                             ),
                           ),
                           Text(
-                            (booking['displayPrice'] as String?) ??
-                                'RM${((booking['totalAmount'] as num?) ?? 0).toStringAsFixed(2)}',
+                            _getDisplayPrice(booking),
                             style: const TextStyle(
-                              fontSize: 16,
+                              fontSize: 12,
                               fontWeight: FontWeight.bold,
-                              color: primaryColor,
+                              color: AppColors.primaryColor,
                             ),
                           ),
                         ],
                       ),
 
-                      if (booking['paymentStatus'] != null) ...[
+                      if (booking['paymentStatus'] != null &&
+                          (booking['status'] != 'cancelled' &&
+                              booking['status'] != 'declined')) ...[
                         const SizedBox(height: 4),
-                        Text(
-                          'Payment: ${_getPaymentStatusText(booking['paymentStatus'] as String? ?? 'pending')}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: _getPaymentStatusColor(
-                              booking['paymentStatus'] as String? ?? 'pending',
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Payment:',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: _getPaymentStatusColor(
+                                  booking['paymentStatus'] as String? ??
+                                      'unpaid',
+                                ),
+                              ),
                             ),
-                          ),
+                            Text(
+                              _getPaymentStatusText(
+                                booking['paymentStatus'] as String? ?? 'unpaid',
+                              ),
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: _getPaymentStatusColor(
+                                  booking['paymentStatus'] as String? ??
+                                      'unpaid',
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
+                        if (booking['hasPayment'] == true &&
+                            (booking['paidAmount'] as double) > 0) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Paid Amount:',
+                                style: TextStyle(
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                'RM${booking['paidAmount'].toString()}',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.primaryColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ],
                   ),
@@ -1020,9 +1302,17 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                // Details button
+                TextButton(
+                  onPressed: () => _showServiceDetails(booking),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primaryColor,
+                    backgroundColor: AppColors.primaryColor.withOpacity(0.1),
+                  ),
+                  child: const Text('View Details'),
+                ),
                 Row(
                   children: [
-                    // Review button for completed services
                     if (isCompleted && !hasRating)
                       IconButton(
                         onPressed: () => _showReviewDialog(booking),
@@ -1056,15 +1346,28 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         tooltip: 'View Invoice',
                       ),
 
-                    // Details button
-                    TextButton(
-                      onPressed: () => _showServiceDetails(booking),
-                      style: TextButton.styleFrom(
-                        foregroundColor: primaryColor,
-                        backgroundColor: primaryColor.withOpacity(0.1),
+                    // Invoice button for completed services
+                    if (isCompleted && booking['receiptId'] != null) ...[
+                      IconButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder:
+                                  (context) => ServiceReceiptPage(
+                                    receiptId: booking['receiptId'] as String,
+                                  ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.receipt_long,
+                          color: Colors.redAccent,
+                          size: 20,
+                        ),
+                        tooltip: 'View Receipt',
                       ),
-                      child: const Text('View Details'),
-                    ),
+                    ],
                   ],
                 ),
               ],
@@ -1100,7 +1403,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             builder:
                 (context, scrollController) => Container(
                   decoration: const BoxDecoration(
-                    color: cardColor,
+                    color: AppColors.cardColor,
                     borderRadius: BorderRadius.only(
                       topLeft: Radius.circular(20),
                       topRight: Radius.circular(20),
@@ -1129,7 +1432,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                     style: TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
-                                      color: secondaryColor,
+                                      color: AppColors.secondaryColor,
                                     ),
                                   ),
                                   const SizedBox(height: 4),
@@ -1162,7 +1465,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                           vertical: 4,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: primaryColor.withOpacity(0.1),
+                                          color: AppColors.primaryColor
+                                              .withOpacity(0.1),
                                           borderRadius: BorderRadius.circular(
                                             8,
                                           ),
@@ -1170,7 +1474,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                         child: Text(
                                           'SERVICE',
                                           style: TextStyle(
-                                            color: primaryColor,
+                                            color: AppColors.primaryColor,
                                             fontSize: 10,
                                             fontWeight: FontWeight.bold,
                                           ),
@@ -1200,21 +1504,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // Quick Info Cards
                               _buildQuickInfoSection(booking),
-
                               const SizedBox(height: 20),
-
-                              // Service Center Information
                               _buildServiceCenterSection(booking),
-
                               const SizedBox(height: 20),
-
-                              // Vehicle Information
                               _buildVehicleSection(booking),
-
                               const SizedBox(height: 20),
-
                               // Services & Packages
                               _buildServicesSection(
                                 booking,
@@ -1222,15 +1517,37 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                 servicesList,
                                 selectionType,
                               ),
-
-                              const SizedBox(height: 20),
-
-                              // Payment Information
+                              const SizedBox(height: 6),
                               _buildPaymentSection(booking),
+                              const SizedBox(height: 10),
+                              _buildServiceMaintenances(booking),
+                              const SizedBox(height: 10),
+                              _buildStatusUpdateTimeline(booking),
+                              const SizedBox(height: 10),
 
-                              const SizedBox(height: 20),
+                              // Action buttons based on status
+                              if (booking['status'] == 'pending' ||
+                                  booking['status'] == 'approved') ...[
+                                SizedBox(
+                                  width: double.infinity,
+                                  height: 50,
+                                  child: OutlinedButton(
+                                    onPressed:
+                                        () => _cancelAppointment(booking),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: AppColors.errorColor,
+                                      side: BorderSide(
+                                        color: AppColors.errorColor,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                    ),
+                                    child: const Text('Cancel Appointment'),
+                                  ),
+                                ),
+                              ],
 
-                              // Rating Section
                               if (isCompleted) _buildRatingSection(booking),
 
                               const SizedBox(height: 20),
@@ -1271,7 +1588,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                   icon: const Icon(Icons.receipt, size: 18),
                                   label: const Text('View Invoice'),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: primaryColor,
+                                    backgroundColor: AppColors.primaryColor,
                                     foregroundColor: Colors.white,
                                     padding: const EdgeInsets.symmetric(
                                       vertical: 12,
@@ -1279,6 +1596,40 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                   ),
                                 ),
                               ),
+                            const SizedBox(width: 16),
+                            if (isCompleted &&
+                                booking['receiptId'] != null) ...[
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder:
+                                            (context) => ServiceReceiptPage(
+                                              receiptId:
+                                                  booking['receiptId']
+                                                      as String,
+                                            ),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.receipt_long,
+                                    size: 18,
+                                  ),
+                                  label: const Text('View Receipt'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -1289,7 +1640,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     );
   }
 
-  // Helper Methods for Service Details
+  // Service booking progress details
   Widget _buildDetailedProgressIndicator(Map<String, dynamic> booking) {
     final status = booking['status'] as String? ?? 'unknown';
     final steps = [
@@ -1318,7 +1669,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         'description': 'Service in progress',
       },
       {
-        'status': 'ready_to_collect',
+        'status': ['ready_to_collect', 'invoice_generated'],
         'label': 'Ready',
         'icon': Icons.emoji_transportation,
         'description': 'Ready for collection',
@@ -1330,8 +1681,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
       decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        border: Border(bottom: BorderSide(color: Colors.blue.shade100)),
+        color: AppColors.backgroundColor,
+        border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1341,7 +1692,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
-              color: Colors.blue.shade800,
+              color: AppColors.secondaryColor,
             ),
           ),
           const SizedBox(height: 12),
@@ -1360,7 +1711,9 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         Container(
                           height: 3,
                           color:
-                              isCompleted ? primaryColor : Colors.grey.shade300,
+                              isCompleted
+                                  ? AppColors.primaryColor
+                                  : Colors.grey.shade300,
                         ),
                         const SizedBox(height: 8),
 
@@ -1374,7 +1727,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                               decoration: BoxDecoration(
                                 color:
                                     isCompleted
-                                        ? primaryColor
+                                        ? AppColors.primaryColor
                                         : Colors.grey.shade300,
                                 shape: BoxShape.circle,
                               ),
@@ -1410,7 +1763,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                 isCurrent ? FontWeight.bold : FontWeight.normal,
                             color:
                                 isCompleted
-                                    ? primaryColor
+                                    ? AppColors.primaryColor
                                     : Colors.grey.shade600,
                           ),
                           textAlign: TextAlign.center,
@@ -1430,13 +1783,13 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.shade200),
+                border: Border.all(color: Colors.grey.shade400),
               ),
               child: Row(
                 children: [
                   Icon(
                     Icons.info_outline,
-                    color: Colors.blue.shade600,
+                    color: AppColors.secondaryColor,
                     size: 16,
                   ),
                   const SizedBox(width: 8),
@@ -1445,7 +1798,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                       steps[currentIndex]['description'] as String,
                       style: TextStyle(
                         fontSize: 12,
-                        color: Colors.blue.shade800,
+                        color: AppColors.textSecondary,
                       ),
                     ),
                   ),
@@ -1539,23 +1892,29 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.business, size: 20, color: primaryColor),
+              Icon(Icons.business, size: 20, color: AppColors.primaryColor),
               const SizedBox(width: 8),
               Text(
                 'Service Center',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: secondaryColor,
+                  color: AppColors.secondaryColor,
                 ),
               ),
             ],
@@ -1593,78 +1952,67 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: primaryColor.withOpacity(0.05),
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: primaryColor.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.directions_car, size: 20, color: primaryColor),
+              Icon(
+                Icons.directions_car,
+                size: 20,
+                color: AppColors.primaryColor,
+              ),
               const SizedBox(width: 8),
               Text(
                 'Vehicle Information',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: secondaryColor,
+                  color: AppColors.secondaryColor,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Wrap(
-            spacing: 16,
-            runSpacing: 8,
+          Row(
             children: [
-              _buildVehicleDetail('Make', vehicle['make'] as String?),
-              _buildVehicleDetail('Model', vehicle['model'] as String?),
-              _buildVehicleDetail('Year', vehicle['year']?.toString()),
-              _buildVehicleDetail('Plate', vehicle['plateNumber'] as String?),
-              _buildVehicleDetail('Fuel Type', vehicle['fuelType'] as String?),
-              _buildVehicleDetail(
-                'Size Class',
-                vehicle['sizeClass'] as String?,
+              Expanded(
+                child: Text(
+                  '${(booking['vehicle'] as Map<String, dynamic>)['make'] ?? ''} ${(booking['vehicle'] as Map<String, dynamic>)['model'] ?? ''} • ${booking['vehiclePlate'] ?? 'Unknown'}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
               ),
-              _buildVehicleDetail(
-                'Displacement',
-                vehicle['displacement'] as String?,
+              Text(
+                'Mileage: ${booking['currentMileage']}',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade700,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVehicleDetail(String label, String? value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+          const SizedBox(height: 16),
           Text(
-            label,
+            '${booking['vehicle']['sizeClass']}',
             style: TextStyle(
-              fontSize: 10,
-              color: Colors.grey.shade600,
+              fontSize: 14,
+              color: Colors.grey.shade700,
               fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            value ?? 'N/A',
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: secondaryColor,
             ),
           ),
         ],
@@ -1689,10 +2037,40 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.bold,
-            color: secondaryColor,
+            color: AppColors.secondaryColor,
           ),
         ),
         const SizedBox(height: 12),
+
+        // Individual Services
+        if (hasServices) ...[
+          Row(
+            children: [
+              Icon(
+                Icons.build_rounded,
+                size: 20,
+                color: AppColors.primaryColor,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Booked Services',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.secondaryColor,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 16),
+          ...servicesList
+              .map(
+                (service) =>
+                    _buildServiceItemCard(service as Map<String, dynamic>),
+              )
+              .toList(),
+        ],
 
         // Packages
         if (hasPackages) ...[
@@ -1702,26 +2080,6 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
               )
               .toList(),
           const SizedBox(height: 16),
-        ],
-
-        // Individual Services
-        if (hasServices) ...[
-          if (hasPackages)
-            Text(
-              'Additional Services',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: secondaryColor,
-              ),
-            ),
-          const SizedBox(height: 8),
-          ...servicesList
-              .map(
-                (service) =>
-                    _buildServiceItemCard(service as Map<String, dynamic>),
-              )
-              .toList(),
         ],
 
         // Empty state
@@ -1751,12 +2109,19 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: secondaryColor.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: secondaryColor.withOpacity(0.2)),
+        // color: AppColors.secondaryColor.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppColors.secondaryColor.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1764,7 +2129,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.inventory_2, size: 20, color: secondaryColor),
+              Icon(Icons.inventory_2, size: 20, color: AppColors.primaryColor),
               const SizedBox(width: 8),
               Expanded(
                 child: Column(
@@ -1774,8 +2139,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                       (package['packageName'] as String?) ?? 'Service Package',
                       style: TextStyle(
                         fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: secondaryColor,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.secondaryColor,
                       ),
                     ),
                     if (package['description'] != null &&
@@ -1795,7 +2160,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             ],
           ),
 
-          const SizedBox(height: 12),
+          const SizedBox(height: 6),
 
           // Included Services
           if (packageServices.isNotEmpty) ...[
@@ -1840,38 +2205,28 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           // Package Pricing
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: primaryColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
                   'Package Price:',
                   style: TextStyle(
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w500,
                     color: Colors.grey.shade700,
+                    fontSize: 12,
                   ),
                 ),
                 Text(
-                  _getPackagePrice(package),
+                  _getServicePrice(package),
                   style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: primaryColor,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primaryColor,
+                    fontSize: 14,
                   ),
                 ),
               ],
             ),
           ),
-
-          if (package['estimatedDuration'] != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Estimated Duration: ${package['estimatedDuration']} minutes',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-            ),
-          ],
         ],
       ),
     );
@@ -1884,14 +2239,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade200),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.build_circle_outlined, size: 16, color: primaryColor),
-          const SizedBox(width: 8),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1900,29 +2253,34 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                   (service['serviceName'] as String?) ?? 'Service',
                   style: const TextStyle(
                     fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: secondaryColor,
-                  ),
-                ),
-                if (service['description'] != null &&
-                    (service['description'] as String).isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    service['description'] as String,
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                  ),
-                ],
-                const SizedBox(height: 4),
-                Text(
-                  _getServicePrice(service),
-                  style: const TextStyle(
-                    fontSize: 12,
                     fontWeight: FontWeight.w500,
-                    color: primaryColor,
+                    color: AppColors.secondaryColor,
                   ),
                 ),
               ],
             ),
+          ),
+          const SizedBox(width: 8),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                'Service Price:',
+                style: TextStyle(
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey.shade700,
+                  fontSize: 12,
+                ),
+              ),
+              Text(
+                _getServicePrice(service),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.primaryColor,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1930,17 +2288,29 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   }
 
   Widget _buildPaymentSection(Map<String, dynamic> booking) {
+    final subtotal = booking['subtotal'] as num?;
+    final sst = booking['sst'] as num?;
+    final subtotalRange = booking['subtotalRange'] as String?;
+    final sstRange = booking['sstRange'] as String?;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.green.shade50,
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.green.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Header
           Row(
             children: [
               Icon(Icons.payment, size: 20, color: Colors.green),
@@ -1950,32 +2320,444 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: secondaryColor,
+                  color: AppColors.secondaryColor,
                 ),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          _buildDetailItem(
-            'Total Amount',
-            (booking['displayPrice'] as String?) ??
-                'RM${((booking['totalAmount'] as num?) ?? 0).toStringAsFixed(2)}',
+
+          Column(
+            children: [
+              // Subtotal
+              if (subtotalRange != null && subtotalRange.isNotEmpty)
+                _buildCompactPriceRow('Subtotal', subtotalRange),
+              if (subtotal != null &&
+                  (subtotalRange == null || subtotalRange.isEmpty))
+                _buildCompactPriceRow(
+                  'Subtotal',
+                  'RM${subtotal.toStringAsFixed(2)}',
+                ),
+
+              // SST
+              if (sstRange != null && sstRange.isNotEmpty)
+                _buildCompactPriceRow('SST (8%)', sstRange),
+              if (sst != null && (sstRange == null || sstRange.isEmpty))
+                _buildCompactPriceRow(
+                  'SST (8%)',
+                  'RM${sst.toStringAsFixed(2)}',
+                ),
+
+              // Total with divider
+              if ((subtotal != null || subtotalRange != null) ||
+                  (sst != null || sstRange != null))
+                const Divider(height: 12, thickness: 1),
+
+              _buildCompactTotalRow(
+                'Est.Total Amount',
+                _getDisplayPrice(booking),
+              ),
+            ],
           ),
-          _buildDetailItem(
-            'Payment Status',
-            _getPaymentStatusText(
-              booking['paymentStatus'] as String? ?? 'pending',
+
+          const SizedBox(height: 12),
+          if (booking['paymentStatus'] != null &&
+              (booking['status'] != 'cancelled' &&
+                  booking['status'] != 'declined')) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: _buildCompactPaymentDetail(
+                    'Status',
+                    _getPaymentStatusText(
+                      booking['paymentStatus'] as String? ?? 'unpaid',
+                    ),
+                    _getPaymentStatusColor(
+                      booking['paymentStatus'] as String? ?? 'unpaid',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 30),
+                Expanded(
+                  child: _buildCompactPaymentDetail(
+                    'Method',
+                    (booking['paymentMethod'] ?? 'N/A').toUpperCase(),
+                    Colors.grey.shade700,
+                  ),
+                ),
+                if (booking['hasPayment'] == true &&
+                    (booking['paidAmount'] as double) > 0) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _buildCompactPaymentDetail(
+                      'Paid Amount',
+                      'RM${booking['paidAmount'].toString()}',
+                      AppColors.primaryColor,
+                    ),
+                  ),
+                ],
+              ],
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactPriceRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
           ),
-          _buildDetailItem(
-            'Payment Method',
-            ((booking['payment'] as Map<String, dynamic>?)?['method']
-                        as String? ??
-                    'cash')
-                .toUpperCase(),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey.shade800,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildCompactTotalRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: AppColors.secondaryColor,
+            ),
+          ),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              color: AppColors.primaryColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactPaymentDetail(String label, String value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 13,
+            color: color,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildServiceMaintenances(Map<String, dynamic> booking) {
+    final serviceMaintenances = booking['serviceMaintenances'] as List? ?? [];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Service Maintenance Schedule',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ...serviceMaintenances
+              .map<Widget>((maintenance) => _buildMaintenanceRow(maintenance))
+              .toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMaintenanceRow(Map<String, dynamic> maintenance) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _formatServiceType(maintenance['serviceType'] ?? ''),
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.secondaryColor,
+            ),
+          ),
+          if (maintenance['nextServiceDate'] != null)
+            Text(
+              'Next Service: ${maintenance['nextServiceDate']}',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+          if (maintenance['nextServiceMileage'] != null)
+            Text(
+              'Next Service Mileage: ${maintenance['nextServiceMileage']} km',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusUpdateTimeline(Map<String, dynamic> booking) {
+    final statusHistory = booking['statusHistory'] ?? [];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Appointment Timeline',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          ...statusHistory
+              .map<Widget>(
+                (history) => _buildServiceTimelineItem(
+                  history['status'] ?? '',
+                  history['timestamp'] ?? Timestamp.now(),
+                  history['notes'] ?? '',
+                ),
+              )
+              .toList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServiceTimelineItem(
+    String status,
+    Timestamp timestamp,
+    String notes,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            margin: const EdgeInsets.only(top: 4),
+            decoration: BoxDecoration(
+              color: _getStatusColor(status),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _getStatusMessage(status),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  _formatTimestamp(timestamp),
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+                if (notes.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    notes,
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _cancelAppointment(Map<String, dynamic> booking) {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Cancel Appointment'),
+            content: const Text(
+              'Are you sure you want to cancel this service appointment?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  try {
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder:
+                          (context) => const Center(
+                            child: CircularProgressIndicator(
+                              color: AppColors.primaryColor,
+                            ),
+                          ),
+                    );
+
+                    // Close the confirmation dialog
+                    Navigator.pop(context);
+
+                    final bookingDoc =
+                        await FirebaseFirestore.instance
+                            .collection('service_bookings')
+                            .doc(booking['id'] as String)
+                            .get();
+
+                    if (!bookingDoc.exists) {
+                      throw Exception('Booking document not found');
+                    }
+
+                    final currentData =
+                        bookingDoc.data() as Map<String, dynamic>? ?? {};
+
+                    final bookingUpdate = <String, dynamic>{
+                      'status': 'cancelled',
+                      'updatedAt': Timestamp.now(),
+                      'statusUpdatedBy': 'customer',
+                      'cancellation': {
+                        'cancelledBy': 'customer',
+                        'cancelledAt': Timestamp.now(),
+                        'reason': 'Cancelled by customer',
+                      },
+                    };
+
+                    final newStatusHistory = {
+                      'status': 'cancelled',
+                      'timestamp': Timestamp.now(),
+                      'updatedBy': 'customer',
+                      'notes': 'Customer has cancelled the booking',
+                    };
+
+                    final existingStatusHistory =
+                        currentData['statusHistory'] as List? ?? [];
+
+                    bookingUpdate['statusHistory'] = [
+                      ...existingStatusHistory,
+                      newStatusHistory,
+                    ];
+
+                    final existingTimestamps =
+                        currentData['timestamps'] as Map<String, dynamic>? ??
+                        {};
+                    bookingUpdate['timestamps'] = {
+                      ...existingTimestamps,
+                      'cancelledAt': FieldValue.serverTimestamp(),
+                    };
+
+                    await FirebaseFirestore.instance
+                        .collection('service_bookings')
+                        .doc(booking['id'] as String)
+                        .update(bookingUpdate);
+
+                    // Close loading indicator
+                    if (mounted) Navigator.pop(context);
+
+                    // Show success message
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Appointment cancelled successfully'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    }
+
+                    // Reload the service history to reflect changes
+                    if (mounted) {
+                      await _loadServiceHistory();
+                    }
+                  } catch (e) {
+                    // Close loading indicator if still open
+                    if (mounted) Navigator.pop(context);
+
+                    // Show error message with actual error
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Failed to cancel appointment: ${e.toString()}',
+                          ),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                    debugPrint('Error cancelling appointment: $e');
+                  }
+                },
+                child: const Text('Yes, Cancel'),
+              ),
+            ],
+          ),
     );
   }
 
@@ -2010,7 +2792,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: secondaryColor,
+                  color: AppColors.secondaryColor,
                 ),
               ),
             ],
@@ -2090,7 +2872,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
-                color: secondaryColor,
+                color: AppColors.secondaryColor,
               ),
             ),
           ),
@@ -2099,40 +2881,45 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     );
   }
 
-  // Helper methods for pricing
-  String _getPackagePrice(Map<String, dynamic> package) {
-    if (package['rangePrice'] != null &&
-        (package['rangePrice'] as String).isNotEmpty) {
-      return package['rangePrice'] as String;
-    } else if (package['fixedPrice'] != null &&
-        (package['fixedPrice'] as num) > 0) {
-      return 'RM${(package['fixedPrice'] as num).toStringAsFixed(2)}';
-    } else {
-      return 'Price upon inspection';
-    }
-  }
-
   String _getServicePrice(Map<String, dynamic> service) {
-    if (service['totalRangePrice'] != null &&
-        (service['totalRangePrice'] as String).isNotEmpty) {
-      return service['totalRangePrice'] as String;
-    } else if (service['partPrice'] != null && service['labourPrice'] != null) {
-      final total =
-          ((service['partPrice'] as num?) ?? 0) +
-          ((service['labourPrice'] as num?) ?? 0);
-      return 'RM${total.toStringAsFixed(2)}';
-    } else if (service['partPriceMin'] != null ||
-        service['labourPriceMin'] != null) {
-      final min =
-          ((service['partPriceMin'] as num?) ?? 0) +
-          ((service['labourPriceMin'] as num?) ?? 0);
-      final max =
-          ((service['partPriceMax'] as num?) ?? 0) +
-          ((service['labourPriceMax'] as num?) ?? 0);
-      return 'RM${min.toStringAsFixed(2)} - RM${max.toStringAsFixed(2)}';
-    } else {
-      return 'Price upon inspection';
+    // Calculate minimum total
+    double minTotal = 0;
+    if (service['partPriceMin'] != null && service['partPriceMin'] > 0) {
+      minTotal += service['partPriceMin'].toDouble();
+    } else if (service['partPrice'] != null && service['partPrice'] > 0) {
+      minTotal += service['partPrice'].toDouble();
     }
+
+    if (service['labourPriceMin'] != null && service['labourPriceMin'] > 0) {
+      minTotal += service['labourPriceMin'].toDouble();
+    } else if (service['labourPrice'] != null && service['labourPrice'] > 0) {
+      minTotal += service['labourPrice'].toDouble();
+    }
+
+    // Calculate maximum total
+    double maxTotal = 0;
+    if (service['partPriceMax'] != null && service['partPriceMax'] > 0) {
+      maxTotal += service['partPriceMax'].toDouble();
+    } else if (service['partPrice'] != null && service['partPrice'] > 0) {
+      maxTotal += service['partPrice'].toDouble();
+    }
+
+    if (service['labourPriceMax'] != null && service['labourPriceMax'] > 0) {
+      maxTotal += service['labourPriceMax'].toDouble();
+    } else if (service['labourPrice'] != null && service['labourPrice'] > 0) {
+      maxTotal += service['labourPrice'].toDouble();
+    }
+
+    // Return formatted price
+    if (minTotal > 0 && maxTotal > 0 && minTotal != maxTotal) {
+      return 'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}';
+    } else if (minTotal > 0) {
+      return 'RM${minTotal.toStringAsFixed(2)}';
+    } else if (maxTotal > 0) {
+      return 'RM${maxTotal.toStringAsFixed(2)}';
+    }
+
+    return 'RM0.00';
   }
 
   Future<void> _updateServiceCenterRating(String serviceCenterId) async {
@@ -2178,32 +2965,77 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   }
 
   Widget _buildTowingCard(Map<String, dynamic> towing) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream:
+          FirebaseFirestore.instance
+              .collection('towing_requests')
+              .doc(towing['id'] as String)
+              .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildTowingCardContent(towing);
+        }
+
+        if (snapshot.hasError) {
+          debugPrint('Towing stream error: ${snapshot.error}');
+          return _buildTowingCardContent(towing);
+        }
+
+        if (!snapshot.hasData || !snapshot.data!.exists) {
+          return _buildTowingCardContent(towing);
+        }
+
+        final latestData = snapshot.data!.data() as Map<String, dynamic>?;
+        if (latestData == null) {
+          return _buildTowingCardContent(towing);
+        }
+
+        // Create updated towing with real-time data but preserve computed fields
+        final updatedTowing = Map<String, dynamic>.from(towing);
+
+        // Update only the fields that change in real-time
+        updatedTowing['status'] = latestData['status'] ?? towing['status'];
+        updatedTowing['updatedAt'] =
+            latestData['updatedAt'] ?? towing['updatedAt'];
+
+        // Update driver info if available
+        if (latestData['driverInfo'] != null) {
+          updatedTowing['driverInfo'] = latestData['driverInfo'];
+        }
+
+        // Update timestamps if available
+        if (latestData['timestamps'] != null) {
+          updatedTowing['timestamps'] = latestData['timestamps'];
+        }
+
+        // Update status history if available
+        if (latestData['statusHistory'] != null) {
+          updatedTowing['statusHistory'] = latestData['statusHistory'];
+        }
+
+        return _buildTowingCardContent(updatedTowing);
+      },
+    );
+  }
+
+  Widget _buildTowingCardContent(Map<String, dynamic> towing) {
     final status = towing['status'] as String? ?? 'unknown';
     final statusColor = _getStatusColor(status);
-    final createdAt = towing['createdAt'] as Timestamp?;
-    final isCompleted = status.toLowerCase() == 'completed';
-    final hasRating =
-        towing['rating'] != null &&
-        (towing['rating'] as Map<String, dynamic>).isNotEmpty &&
-        (towing['rating']?['stars'] != null);
-
-    Map<String, dynamic> _safeMapConversion(dynamic value) {
-      if (value == null) return <String, dynamic>{};
-      if (value is Map<String, dynamic>) return value;
-      if (value is Map) {
-        return Map<String, dynamic>.from(value);
-      }
-      return <String, dynamic>{};
-    }
-
-    final vehicleInfo = _safeMapConversion(towing['vehicleInfo']);
-    final location = _safeMapConversion(towing['location']);
-    final destination = _safeMapConversion(towing['destination']);
+    final statusText = _getStatusText(status);
+    final isActive = [
+      'pending',
+      'accepted',
+      'assigned',
+      'dispatched',
+      'ongoing',
+    ].contains(status);
+    final isCompleted = status == 'completed';
+    final hasRating = towing['rating'] != null;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
-        color: cardColor,
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -2215,12 +3047,41 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       ),
       child: Column(
         children: [
-          // Header
+          // Header with status and actions
           Container(
             padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.05),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(12),
+                topRight: Radius.circular(12),
+              ),
+            ),
             child: Row(
               children: [
-                // Towing Type Badge
+                // Status Badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    statusText,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+
+                const Spacer(),
+
+                // Service Type Badge
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -2230,7 +3091,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                     color: Colors.orange.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Text(
+                  child: Text(
                     'TOWING',
                     style: TextStyle(
                       color: Colors.orange,
@@ -2239,41 +3100,69 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                     ),
                   ),
                 ),
+
                 const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    status.toUpperCase(),
-                    style: TextStyle(
-                      color: statusColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+
+                // Date
+                Text(
+                  formatDate(towing['createdAt'] as Timestamp?),
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
                 ),
-                const Spacer(),
-                if (createdAt != null)
-                  Text(
-                    formatDate(createdAt),
-                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                  ),
               ],
             ),
           ),
 
           // Content
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Service Center
+                Row(
+                  children: [
+                    Icon(Icons.business, size: 16, color: Colors.grey.shade600),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        towing['serviceCenterName'] ?? 'Service Center',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.secondaryColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 12),
+
+                // Vehicle Information
+                if (towing['vehicleInfo'] != null) ...[
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.directions_car,
+                        size: 16,
+                        color: Colors.grey.shade600,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '${(towing['vehicleInfo'] as Map<String, dynamic>)['make'] ?? ''} ${(towing['vehicleInfo'] as Map<String, dynamic>)['model'] ?? ''} • ${(towing['vehicleInfo'] as Map<String, dynamic>)['plateNumber'] ?? 'Unknown'}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
+
                 // Towing Type
                 Row(
                   children: [
@@ -2285,11 +3174,10 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        (towing['towingType'] as String?) ?? 'Towing Service',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: secondaryColor,
+                        towing['towingType'] ?? 'General Towing',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade700,
                         ),
                       ),
                     ),
@@ -2298,121 +3186,133 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
 
                 const SizedBox(height: 12),
 
-                // Vehicle Details
-                if (vehicleInfo.isNotEmpty) ...[
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.directions_car,
-                        size: 16,
-                        color: Colors.grey.shade600,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          '${vehicleInfo['make'] ?? ''} ${vehicleInfo['model'] ?? ''} ${vehicleInfo['plateNumber'] ?? ''} (${vehicleInfo['year'] ?? ''})',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade700,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                // Progress indicators for active towing
+                if (isActive) _buildTowingProgress(towing),
 
-                // Pickup Location
-                if (location['address'] != null) ...[
-                  Row(
+                // Cost and additional info
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        Icons.location_on,
-                        size: 16,
-                        color: Colors.grey.shade600,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'From: ${location['address']}',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade700,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Estimated Cost:',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey.shade700,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                ],
-
-                // Destination
-                if (destination['serviceCenterName'] != null) ...[
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(Icons.flag, size: 16, color: Colors.grey.shade600),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'To: ${destination['serviceCenterName']}',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey.shade700,
+                          Text(
+                            _getTowingDisplayPrice(towing),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: AppColors.primaryColor,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                ],
 
-                // Distance
-                if (towing['distance'] != null) ...[
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.straighten,
-                        size: 16,
-                        color: Colors.grey.shade600,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Distance: ${(towing['distance'] as num).toStringAsFixed(1)} km',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey.shade700,
+                      if (towing['distance'] != null) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Distance:',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey.shade700,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '${(towing['distance'] as num).toStringAsFixed(1)} km',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue.shade700,
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                      ],
+                      const SizedBox(height: 4),
+                      if (towing['paymentStatus'] != null &&
+                          (towing['status'] != 'cancelled' &&
+                              towing['status'] != 'declined')) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              'Payment:',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: _getPaymentStatusColor(
+                                  towing['paymentStatus'] as String? ??
+                                      'unpaid',
+                                ),
+                              ),
+                            ),
+                            Text(
+                              _getPaymentStatusText(
+                                towing['paymentStatus'] as String? ?? 'unpaid',
+                              ),
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: _getPaymentStatusColor(
+                                  towing['paymentStatus'] as String? ??
+                                      'unpaid',
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (towing['hasPayment'] == true &&
+                            (towing['paidAmount'] as double) > 0) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Paid Amount:',
+                                style: TextStyle(
+                                  color: Colors.grey.shade700,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              Text(
+                                'RM${towing['paidAmount'].toString()}',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.primaryColor,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
                     ],
                   ),
-                  const SizedBox(height: 8),
-                ],
-
-                // Driver Info
-                if (towing['driverInfo'] != null) ...[
-                  Row(
-                    children: [
-                      Icon(Icons.person, size: 16, color: Colors.grey.shade600),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Driver: ${_safeMapConversion(towing['driverInfo'])['name'] ?? 'Assigned'}',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                ],
+                ),
               ],
             ),
           ),
 
-          // Footer
+          // Footer Actions
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -2425,40 +3325,71 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                if (isCompleted && !hasRating)
-                  Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    child: ElevatedButton(
-                      onPressed: () => _showReviewDialog(towing),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                      ),
-                      child: const Text(
-                        'Review',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  ),
+                // Details button
                 TextButton(
                   onPressed: () => _showTowingDetails(towing),
-                  child: const Text(
-                    'View Details',
-                    style: TextStyle(
-                      color: primaryColor,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primaryColor,
+                    backgroundColor: AppColors.primaryColor.withOpacity(0.1),
                   ),
+                  child: const Text('View Details'),
+                ),
+                Row(
+                  children: [
+                    if (isCompleted && !hasRating)
+                      IconButton(
+                        onPressed: () => _showReviewDialog(towing),
+                        icon: const Icon(
+                          Icons.star,
+                          color: Colors.amber,
+                          size: 20,
+                        ),
+                        tooltip: 'Add Review',
+                      ),
+
+                    if (towing['invoiceId'] != null)
+                      IconButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder:
+                                  (context) => TowingInvoicePage(
+                                    invoiceId: towing['invoiceId'] as String,
+                                  ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.receipt,
+                          color: Colors.blue,
+                          size: 20,
+                        ),
+                        tooltip: 'View Invoice',
+                      ),
+
+                    if (isCompleted && towing['receiptId'] != null) ...[
+                      IconButton(
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder:
+                                  (context) => TowingReceiptPage(
+                                    receiptId: towing['receiptId'] as String,
+                                  ),
+                            ),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.receipt_long,
+                          color: Colors.redAccent,
+                          size: 20,
+                        ),
+                        tooltip: 'View Receipt',
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -2469,27 +3400,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   }
 
   void _showTowingDetails(Map<String, dynamic> towing) {
-    Map<String, dynamic> _safeMapConversion(dynamic value) {
-      if (value == null) return <String, dynamic>{};
-      if (value is Map<String, dynamic>) return value;
-      if (value is Map) return Map<String, dynamic>.from(value);
-      return <String, dynamic>{};
-    }
-
-    final vehicleInfo = _safeMapConversion(towing['vehicleInfo']);
-    final location = _safeMapConversion(towing['location']);
-    final destination = _safeMapConversion(towing['destination']);
-    final driverInfo =
-        towing['driverInfo'] != null
-            ? _safeMapConversion(towing['driverInfo'])
-            : null;
     final status = towing['status'] as String? ?? 'unknown';
     final isActive = [
       'pending',
-      'confirmed',
-      'assigned',
+      'accepted',
       'dispatched',
-      'in_progress',
+      'ongoing',
     ].contains(status);
     final isCompleted = status == 'completed';
     final hasRating = towing['rating'] != null;
@@ -2506,7 +3422,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             builder:
                 (context, scrollController) => Container(
                   decoration: const BoxDecoration(
-                    color: cardColor,
+                    color: AppColors.cardColor,
                     borderRadius: BorderRadius.only(
                       topLeft: Radius.circular(20),
                       topRight: Radius.circular(20),
@@ -2535,7 +3451,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                     style: TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.bold,
-                                      color: secondaryColor,
+                                      color: AppColors.secondaryColor,
                                     ),
                                   ),
                                   const SizedBox(height: 4),
@@ -2596,9 +3512,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                       ),
 
                       // Progress Indicator for Active Towing
-                      if (isActive) _buildTowingProgressIndicator(towing),
+                      if (isActive) _buildTowingProgressInfo(towing),
 
-                      // Content
                       Expanded(
                         child: SingleChildScrollView(
                           controller: scrollController,
@@ -2606,61 +3521,50 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // Quick Info Cards
-                              _buildTowingQuickInfoSection(towing),
+                              _buildTowingRequestQuickInfoSection(towing),
 
-                              const SizedBox(height: 20),
+                              // Driver Information (if available)
+                              if (towing['driverInfo'] != null &&
+                                  towing['driverInfo'].isNotEmpty)
+                                _buildDriverCard(towing),
 
-                              // Request Information
-                              _buildRequestInfoSection(towing),
+                              if (towing['driverInfo'] != null &&
+                                  towing['driverInfo'].isNotEmpty)
+                                const SizedBox(height: 20),
+
+                              // Service Center Information
+                              _buildServiceCenterCard(towing),
 
                               const SizedBox(height: 20),
 
                               // Vehicle Information
-                              if (vehicleInfo.isNotEmpty)
-                                _buildTowingVehicleSection(vehicleInfo),
+                              _buildVehicleCard(towing),
 
                               const SizedBox(height: 20),
+
+                              // Pricing & Distance Information
+                              if (towing['pricingBreakdown'] != null) ...[
+                                _buildPricingCard(towing),
+                                const SizedBox(height: 20),
+                              ],
 
                               // Location Information
-                              _buildLocationSection(location, destination),
-
+                              if (towing['location'] != null) ...[
+                                _buildLocationCard(towing),
+                                const SizedBox(height: 20),
+                              ],
+                              _buildServiceDetailsCard(towing),
                               const SizedBox(height: 20),
 
-                              // Driver Information
-                              if (driverInfo != null)
-                                _buildDriverSection(driverInfo),
-
+                              _buildTowingPaymentInfoCard(towing),
                               const SizedBox(height: 20),
 
-                              // Timeline
-                              _buildTowingTimelineSection(towing),
-
+                              _buildStatusTimeline(towing),
                               const SizedBox(height: 20),
 
-                              // Description
-                              if (towing['description'] != null &&
-                                  (towing['description'] as String).isNotEmpty)
-                                _buildDescriptionSection(towing),
+                              if (isCompleted) _buildRatingSection(towing),
 
-                              const SizedBox(height: 20),
-
-                              // Payment Information
-                              _buildTowingPaymentSection(towing),
-
-                              const SizedBox(height: 20),
-
-                              // Cancellation Details
-                              if (towing['cancellation'] != null)
-                                _buildCancellationSection(towing),
-
-                              const SizedBox(height: 20),
-
-                              // Rating Section
-                              if (isCompleted)
-                                _buildTowingRatingSection(towing),
-
-                              const SizedBox(height: 20),
+                              const SizedBox(height: 32),
                             ],
                           ),
                         ),
@@ -2678,12 +3582,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         child: Row(
                           children: [
                             // Review Button for completed towing without rating
-                            if (isCompleted && !hasRating)
+                            if (isCompleted && !hasRating) ...[
                               Expanded(
                                 child: ElevatedButton.icon(
                                   onPressed: () => _showReviewDialog(towing),
                                   icon: const Icon(Icons.star, size: 18),
-                                  label: const Text('Add Review'),
+                                  label: const Text('Rate Service'),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: Colors.amber,
                                     foregroundColor: Colors.white,
@@ -2693,6 +3597,86 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                                   ),
                                 ),
                               ),
+                            ],
+                            // Cancel button for pending requests
+                            if (status == 'pending') ...[
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () => _cancelTowingRequest(towing),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: AppColors.errorColor,
+                                    side: BorderSide(
+                                      color: AppColors.errorColor,
+                                    ),
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                  child: const Text('Cancel Request'),
+                                ),
+                              ),
+                            ],
+
+                            if (towing['invoiceId'] != null) ...[
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder:
+                                            (context) => TowingInvoicePage(
+                                              invoiceId:
+                                                  towing['invoiceId'] as String,
+                                            ),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(Icons.receipt, size: 18),
+                                  label: const Text('View Invoice'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.primaryColor,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                            const SizedBox(width: 16),
+                            if (isCompleted && towing['receiptId'] != null) ...[
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder:
+                                            (context) => TowingReceiptPage(
+                                              receiptId:
+                                                  towing['receiptId'] as String,
+                                            ),
+                                      ),
+                                    );
+                                  },
+                                  icon: const Icon(
+                                    Icons.receipt_long,
+                                    size: 18,
+                                  ),
+                                  label: const Text('View Receipt'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -2703,801 +3687,431 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     );
   }
 
-  // Helper Methods for Towing Details
-  Widget _buildTowingProgressIndicator(Map<String, dynamic> towing) {
-    final status = towing['status'] as String? ?? 'unknown';
-    final steps = [
-      {
-        'status': 'pending',
-        'label': 'Pending',
-        'icon': Icons.pending,
-        'description': 'Waiting for confirmation',
-      },
-      {
-        'status': 'confirmed',
-        'label': 'Confirmed',
-        'icon': Icons.check_circle_outline,
-        'description': 'Request confirmed',
-      },
-      {
-        'status': 'assigned',
-        'label': 'Assigned',
-        'icon': Icons.person_outline,
-        'description': 'Driver assigned',
-      },
-      {
-        'status': 'dispatched',
-        'label': 'Dispatched',
-        'icon': Icons.directions_car,
-        'description': 'Driver on the way',
-      },
-      {
-        'status': 'in_progress',
-        'label': 'In Progress',
-        'icon': Icons.build,
-        'description': 'Towing in progress',
-      },
-      {
-        'status': 'completed',
-        'label': 'Completed',
-        'icon': Icons.check_circle,
-        'description': 'Towing completed',
-      },
-    ];
-
-    final currentIndex = steps.indexWhere((step) => step['status'] == status);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        border: Border(bottom: BorderSide(color: Colors.orange.shade100)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Towing Progress',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: Colors.orange.shade800,
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // Simplified progress for mobile
-          Row(
-            children: [
-              Icon(Icons.local_shipping, size: 20, color: Colors.orange),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  steps[currentIndex >= 0 ? currentIndex : 0]['description']
-                      as String,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.orange.shade800,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: currentIndex >= 0 ? (currentIndex + 1) / steps.length : 0,
-            backgroundColor: Colors.grey.shade300,
-            color: Colors.orange,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingQuickInfoSection(Map<String, dynamic> towing) {
+  Widget _buildTowingRequestQuickInfoSection(Map<String, dynamic> towing) {
     return Row(
       children: [
-        // Request ID
+        // Booking ID
         Expanded(
-          child: _buildTowingInfoCard(
+          child: _buildInfoCard(
             icon: Icons.confirmation_number,
-            title: 'Request ID',
+            title: 'Towing Request ID',
             value: (towing['id']?.toString().substring(0, 8)) ?? 'N/A',
             color: Colors.blue,
           ),
         ),
-        const SizedBox(width: 12),
-
-        // Distance
-        if (towing['distance'] != null)
-          Expanded(
-            child: _buildTowingInfoCard(
-              icon: Icons.space_dashboard,
-              title: 'Distance',
-              value: '${(towing['distance'] as num).toStringAsFixed(1)} km',
-              color: Colors.green,
-            ),
-          ),
       ],
     );
   }
 
-  Widget _buildTowingInfoCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required Color color,
-  }) {
+  Widget _buildDriverCard(Map<String, dynamic> towing) {
+    final driverInfo = _safeMapConversion(towing['driverInfo']);
+
     return Container(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
+        color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(icon, size: 16, color: color),
-              const SizedBox(width: 4),
-              Text(
-                title,
+              Icon(Icons.person, color: AppColors.primaryColor, size: 20),
+              const Text(
+                'Driver Information',
                 style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey.shade600,
-                  fontWeight: FontWeight.w500,
+                  color: AppColors.secondaryColor,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            value,
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              // Driver Avatar
+              Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryColor.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: _buildDriverImage(driverInfo),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      driverInfo['name'] ?? 'Unknown Driver',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    if (driverInfo['rating'] != null)
+                      Row(
+                        children: [
+                          Icon(Icons.star, color: Colors.amber, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            driverInfo['rating'].toString(),
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              if (driverInfo['contactNumber'] != null)
+                IconButton(
+                  onPressed: () => _makeCall(driverInfo['contactNumber']),
+                  icon: Container(
+                    padding: const EdgeInsets.all(12),
+                    child: const Icon(
+                      Icons.phone,
+                      color: Colors.green,
+                      size: 20,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+
+          // Driver Vehicle Information
+          if (towing['driverVehicleInfo'] != null) ...[
+            const SizedBox(height: 16),
+            _buildDriverVehicleInfo(towing),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDriverImage(Map<String, dynamic> driverInfo) {
+    final driverImage = driverInfo['driverImage'];
+
+    if (driverImage == null || driverImage.toString().isEmpty) {
+      return const Icon(Icons.person, color: AppColors.primaryColor, size: 30);
+    }
+
+    try {
+      // Try to handle encrypted image
+      const secretKey = "AUTO_MATE_SECRET_KEY_256";
+      final decryptedImage = CryptoJSCompat.decrypt(
+        driverImage.toString(),
+        secretKey,
+      );
+
+      if (decryptedImage.isNotEmpty && decryptedImage.startsWith('data:')) {
+        return _buildBase64Image(decryptedImage);
+      }
+    } catch (e) {
+      debugPrint('Error decrypting driver image: $e');
+    }
+
+    // Fallback to default icon
+    return const Icon(Icons.person, color: AppColors.primaryColor, size: 30);
+  }
+
+  Widget _buildBase64Image(String dataUri) {
+    try {
+      final base64String = dataUri.split(',').last;
+      final bytes = base64.decode(base64String);
+
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(30),
+        child: Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          width: 60,
+          height: 60,
+          errorBuilder: (context, error, stackTrace) {
+            return const Icon(
+              Icons.person,
+              color: AppColors.primaryColor,
+              size: 30,
+            );
+          },
+        ),
+      );
+    } catch (e) {
+      return const Icon(Icons.person, color: AppColors.primaryColor, size: 30);
+    }
+  }
+
+  Widget _buildDriverVehicleInfo(Map<String, dynamic> towing) {
+    final driverVehicleInfo = towing['driverVehicleInfo'];
+
+    if (driverVehicleInfo == null) return Container();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          // Vehicle Image
+          Container(
+            width: 120,
+            height: 100,
+            decoration: BoxDecoration(
+              color: AppColors.primaryColor.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: _buildVehicleImage(driverVehicleInfo),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Driver Vehicle',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${driverVehicleInfo['carPlate'] ?? 'N/A'} - ${driverVehicleInfo['make'] ?? ''} ${driverVehicleInfo['model'] ?? ''}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (driverVehicleInfo['year'] != null)
+                  Text(
+                    'Year: ${driverVehicleInfo['year']}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVehicleImage(Map<String, dynamic> driverVehicleInfo) {
+    final vehicleImages = driverVehicleInfo['vehicleImage'];
+
+    if (vehicleImages == null ||
+        vehicleImages is! List ||
+        vehicleImages.isEmpty) {
+      return const Icon(
+        Icons.directions_car,
+        color: AppColors.primaryColor,
+        size: 24,
+      );
+    }
+
+    try {
+      const secretKey = "AUTO_MATE_SECRET_KEY_256";
+      final encryptedImage = vehicleImages[0].toString();
+      final decryptedImage = CryptoJSCompat.decrypt(encryptedImage, secretKey);
+
+      if (decryptedImage.isNotEmpty && decryptedImage.startsWith('data:')) {
+        return _buildVehicleBase64Image(decryptedImage);
+      }
+    } catch (e) {
+      debugPrint('Error decrypting vehicle image: $e');
+    }
+
+    return const Icon(
+      Icons.directions_car,
+      color: AppColors.primaryColor,
+      size: 24,
+    );
+  }
+
+  Widget _buildVehicleBase64Image(String dataUri) {
+    try {
+      final base64String = dataUri.split(',').last.trim();
+      final bytes = base64.decode(base64String);
+
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Image.memory(
+          bytes,
+          fit: BoxFit.cover,
+          width: 60,
+          height: 60,
+          errorBuilder: (context, error, stackTrace) {
+            return const Icon(
+              Icons.directions_car,
+              color: AppColors.primaryColor,
+              size: 24,
+            );
+          },
+        ),
+      );
+    } catch (e) {
+      return const Icon(
+        Icons.directions_car,
+        color: AppColors.primaryColor,
+        size: 24,
+      );
+    }
+  }
+
+  Widget _buildServiceCenterCard(Map<String, dynamic> towing) {
+    final serviceCenterName =
+        towing['serviceCenterName'] ?? 'Unknown Service Center';
+    final contactNumber = towing['serviceCenterContactNumber'] ?? 'N/A';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Icon(
+                Icons.business,
+                color: AppColors.primaryColor,
+                size: 20,
+              ),
+              const Text(
+                'Service Center Information',
+                style: TextStyle(
+                  color: AppColors.secondaryColor,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (contactNumber != 'N/A' && contactNumber.isNotEmpty)
+                IconButton(
+                  onPressed: () => _makeCall(contactNumber),
+                  icon: Container(
+                    padding: const EdgeInsets.all(6),
+                    child: const Icon(
+                      Icons.phone,
+                      color: AppColors.errorColor,
+                      size: 20,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      serviceCenterName,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    if (towing['address'] != null) ...[
+                      Text(
+                        towing['address'].toString(),
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 14,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ] else ...[
+                      Text(
+                        'Address not available',
+                        style: TextStyle(
+                          color: Colors.grey.shade400,
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVehicleCard(Map<String, dynamic> towing) {
+    final vehicleInfo = _safeMapConversion(towing['vehicleInfo']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Vehicle Information',
             style: TextStyle(
-              fontSize: 14,
-              color: color,
+              color: AppColors.secondaryColor,
+              fontSize: 16,
               fontWeight: FontWeight.bold,
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRequestInfoSection(Map<String, dynamic> towing) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.local_shipping, size: 20, color: Colors.orange),
-              const SizedBox(width: 8),
-              Text(
-                'Request Information',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _buildTowingDetailItem(
-            'Towing Type',
-            (towing['towingType'] as String?) ?? 'Standard',
-          ),
-          _buildTowingDetailItem(
-            'Contact Number',
-            (towing['contactNumber'] as String?) ?? 'N/A',
-          ),
-          _buildTowingDetailItem(
-            'Payment Status',
-            _getPaymentStatusText(
-              towing['paymentStatus'] as String? ?? 'pending',
+          const SizedBox(height: 16),
+          if (vehicleInfo.isNotEmpty) ...[
+            _buildDetailRow('Make', vehicleInfo['make'] ?? 'N/A'),
+            _buildDetailRow('Model', vehicleInfo['model'] ?? 'N/A'),
+            _buildDetailRow('Year', vehicleInfo['year'] ?? 'N/A'),
+            _buildDetailRow(
+              'Plate Number',
+              vehicleInfo['plateNumber'] ?? 'N/A',
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingVehicleSection(Map<String, dynamic> vehicleInfo) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blue.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.directions_car, size: 20, color: Colors.blue),
-              const SizedBox(width: 8),
-              Text(
-                'Vehicle Information',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              _buildVehicleDetailCard('Make', vehicleInfo['make'] as String?),
-              _buildVehicleDetailCard('Model', vehicleInfo['model'] as String?),
-              _buildVehicleDetailCard('Year', vehicleInfo['year']?.toString()),
-              _buildVehicleDetailCard(
-                'Plate',
-                vehicleInfo['plateNumber'] as String?,
-              ),
-              if (vehicleInfo['sizeClass'] != null)
-                _buildVehicleDetailCard(
-                  'Size Class',
-                  vehicleInfo['sizeClass'] as String?,
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildVehicleDetailCard(String label, String? value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.blue.shade100),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 10,
-              color: Colors.grey.shade600,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            value ?? 'N/A',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: Colors.blue.shade800,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLocationSection(
-    Map<String, dynamic> location,
-    Map<String, dynamic> destination,
-  ) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.purple.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.purple.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.location_on, size: 20, color: Colors.purple),
-              const SizedBox(width: 8),
-              Text(
-                'Location Details',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-
-          // Pickup Location
-          if (location.isNotEmpty) ...[
-            _buildLocationCard(
-              title: 'Pickup Location',
-              address: location['address']?.toString(),
-              icon: Icons.my_location,
-              color: Colors.green,
-            ),
-            const SizedBox(height: 12),
-          ],
-
-          // Destination
-          if (destination.isNotEmpty) ...[
-            _buildLocationCard(
-              title: 'Destination',
-              address: destination['address']?.toString(),
-              serviceCenter: destination['serviceCenterName']?.toString(),
-              icon: Icons.flag,
-              color: Colors.red,
-            ),
+            _buildDetailRow('Size Class', vehicleInfo['sizeClass'] ?? 'N/A'),
           ],
         ],
       ),
     );
   }
 
-  Widget _buildLocationCard({
-    required String title,
-    required String? address,
-    required IconData icon,
-    required Color color,
-    String? serviceCenter,
-  }) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 16, color: color),
-              const SizedBox(width: 8),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: color,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (serviceCenter != null) ...[
-            Text(
-              serviceCenter,
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: secondaryColor,
-              ),
-            ),
-            const SizedBox(height: 4),
-          ],
-          if (address != null && address.isNotEmpty)
-            Text(
-              address,
-              style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDriverSection(Map<String, dynamic> driverInfo) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.teal.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.teal.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.person, size: 20, color: Colors.teal),
-              const SizedBox(width: 8),
-              Text(
-                'Driver Information',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            children: [
-              _buildDriverDetailCard('Name', driverInfo['name'] as String?),
-              _buildDriverDetailCard('Phone', driverInfo['phoneNo'] as String?),
-              if (driverInfo['make'] != null && driverInfo['model'] != null)
-                _buildDriverDetailCard(
-                  'Tow Vehicle',
-                  '${driverInfo['make']} ${driverInfo['model']}',
-                ),
-              if (driverInfo['carPlate'] != null)
-                _buildDriverDetailCard(
-                  'Plate',
-                  driverInfo['carPlate'] as String?,
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDriverDetailCard(String label, String? value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.teal.shade100),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 10,
-              color: Colors.grey.shade600,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            value ?? 'N/A',
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: Colors.teal.shade800,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingTimelineSection(Map<String, dynamic> towing) {
-    final hasTimeline =
-        towing['requestedAt'] != null ||
-        towing['assignedAt'] != null ||
-        towing['completedAt'] != null;
-
-    if (!hasTimeline) return const SizedBox.shrink();
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.access_time, size: 20, color: Colors.grey.shade700),
-              const SizedBox(width: 8),
-              Text(
-                'Timeline',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Column(
-            children: [
-              if (towing['requestedAt'] != null)
-                _buildTimelineItem(
-                  'Requested',
-                  towing['requestedAt'] as Timestamp?,
-                  Icons.schedule,
-                ),
-              if (towing['assignedAt'] != null)
-                _buildTimelineItem(
-                  'Assigned',
-                  towing['assignedAt'] as Timestamp?,
-                  Icons.person,
-                ),
-              if (towing['completedAt'] != null)
-                _buildTimelineItem(
-                  'Completed',
-                  towing['completedAt'] as Timestamp?,
-                  Icons.check_circle,
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTimelineItem(String event, Timestamp? timestamp, IconData icon) {
+  Widget _buildDetailRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: primaryColor),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              event,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ),
-          Text(
-            timestamp != null ? formatDateTime(timestamp) : 'Pending',
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDescriptionSection(Map<String, dynamic> towing) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.blueGrey.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.blueGrey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.description, size: 20, color: Colors.blueGrey),
-              const SizedBox(width: 8),
-              Text(
-                'Description',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            towing['description'] as String,
-            style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingPaymentSection(Map<String, dynamic> towing) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.green.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.green.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.payment, size: 20, color: Colors.green),
-              const SizedBox(width: 8),
-              Text(
-                'Payment Information',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _buildTowingDetailItem(
-            'Total Amount',
-            'RM${((towing['totalAmount'] as num?) ?? 0).toStringAsFixed(2)}',
-          ),
-          _buildTowingDetailItem(
-            'Estimated Cost',
-            'RM${((towing['estimatedCost'] as num?) ?? 0).toStringAsFixed(2)}',
-          ),
-          _buildTowingDetailItem(
-            'Payment Status',
-            _getPaymentStatusText(
-              towing['paymentStatus'] as String? ?? 'pending',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCancellationSection(Map<String, dynamic> towing) {
-    final cancellation = _safeMapConversion(towing['cancellation']);
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.red.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.red.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.cancel, size: 20, color: Colors.red),
-              const SizedBox(width: 8),
-              Text(
-                'Cancellation Details',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.red.shade800,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _buildTowingDetailItem(
-            'Reason',
-            (cancellation['reason'] as String?) ?? 'Not specified',
-          ),
-          _buildTowingDetailItem(
-            'Cancelled By',
-            (cancellation['cancelledBy'] as String?) ?? 'Unknown',
-          ),
-          if (cancellation['cancelledAt'] != null)
-            _buildTowingDetailItem(
-              'Cancelled At',
-              formatDateTime(cancellation['cancelledAt'] as Timestamp?),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingRatingSection(Map<String, dynamic> towing) {
-    final rating = towing['rating'] as Map<String, dynamic>?;
-    final hasRating =
-        rating != null && rating.isNotEmpty && rating['stars'] != null;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: hasRating ? Colors.green.shade50 : Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: hasRating ? Colors.green.shade200 : Colors.amber.shade200,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                hasRating ? Icons.star : Icons.star_outline,
-                size: 20,
-                color: hasRating ? Colors.green : Colors.amber,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                hasRating ? 'Your Rating' : 'Rate Your Experience',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: secondaryColor,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-
-          if (hasRating) ...[
-            Row(
-              children: [
-                for (int i = 0; i < 5; i++)
-                  Icon(
-                    i < ((rating!['stars'] as num?)?.toInt() ?? 0)
-                        ? Icons.star
-                        : Icons.star_border,
-                    color: Colors.amber,
-                    size: 20,
-                  ),
-                const SizedBox(width: 8),
-                Text(
-                  '${rating['stars']}/5',
-                  style: TextStyle(
-                    color: Colors.green.shade700,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-            if (rating['comment'] != null &&
-                (rating['comment'] as String).isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                rating['comment'] as String,
-                style: TextStyle(color: Colors.green.shade700, fontSize: 14),
-              ),
-            ],
-          ] else ...[
-            Text(
-              'How was your towing experience?',
-              style: TextStyle(color: Colors.amber.shade700, fontSize: 14),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () => _showReviewDialog(towing),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.amber,
-                foregroundColor: Colors.white,
-              ),
-              child: const Text('Add Review'),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTowingDetailItem(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -3516,9 +4130,9 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             child: Text(
               value,
               style: const TextStyle(
+                color: AppColors.secondaryColor,
                 fontSize: 14,
                 fontWeight: FontWeight.w500,
-                color: secondaryColor,
               ),
             ),
           ),
@@ -3527,22 +4141,779 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     );
   }
 
+  Widget _buildTowingProgress(Map<String, dynamic> towing) {
+    final status = towing['status'] as String? ?? 'unknown';
+    final steps = [
+      {'status': 'pending', 'label': 'Pending', 'icon': Icons.pending},
+      {
+        'status': 'accepted',
+        'label': 'Accepted',
+        'icon': Icons.check_circle_outline,
+      },
+      {
+        'status': 'dispatched',
+        'label': 'Dispatched',
+        'icon': Icons.local_shipping,
+      },
+      {'status': 'ongoing', 'label': 'Ongoing', 'icon': Icons.build},
+      {
+        'status': 'invoice_generated',
+        'label': 'Ready',
+        'icon': Icons.emoji_transportation,
+      },
+    ];
+
+    final currentIndex = steps.indexWhere((step) => step['status'] == status);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        Text(
+          'Current Status:',
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey.shade600,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children:
+              steps.asMap().entries.map((entry) {
+                final index = entry.key;
+                final step = entry.value;
+                final isCompleted = index <= currentIndex;
+                final isCurrent = index == currentIndex;
+
+                return Expanded(
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              height: 3,
+                              color:
+                                  isCompleted
+                                      ? Colors.orange
+                                      : Colors.grey.shade300,
+                            ),
+                          ),
+                          if (index < steps.length - 1)
+                            const SizedBox(width: 4),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Icon(
+                        step['icon'] as IconData,
+                        size: 16,
+                        color:
+                            isCompleted ? Colors.orange : Colors.grey.shade400,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        step['label'] as String,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color:
+                              isCompleted
+                                  ? Colors.orange
+                                  : Colors.grey.shade500,
+                          fontWeight:
+                              isCurrent ? FontWeight.bold : FontWeight.normal,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTowingProgressInfo(Map<String, dynamic> towing) {
+    final status = towing['status'] as String? ?? 'unknown';
+    final steps = [
+      {
+        'status': 'pending',
+        'label': 'Pending',
+        'icon': Icons.pending,
+        'description': 'Request submitted and awaiting confirmation',
+      },
+      {
+        'status': 'accepted',
+        'label': 'Accepted',
+        'icon': Icons.check_circle_outline,
+        'description': 'Towing request has been accepted',
+      },
+      {
+        'status': 'dispatched',
+        'label': 'Dispatched',
+        'icon': Icons.local_shipping,
+        'description': 'Driver is on the way to your location',
+      },
+      {
+        'status': 'ongoing',
+        'label': 'Ongoing',
+        'icon': Icons.build,
+        'description': 'Towing service is in progress',
+      },
+      {
+        'status': 'invoice_generated',
+        'label': 'Ready',
+        'icon': Icons.emoji_transportation,
+        'description':
+            'Invoice has been generated, you may come to collect your car',
+      },
+    ];
+
+    final currentIndex = steps.indexWhere((step) => step['status'] == status);
+
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          decoration: BoxDecoration(
+            color: AppColors.backgroundColor,
+            border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Towing Progress',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.orange.shade800,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children:
+                    steps.asMap().entries.map((entry) {
+                      final index = entry.key;
+                      final step = entry.value;
+                      final isCompleted = index <= currentIndex;
+                      final isCurrent = index == currentIndex;
+
+                      return Expanded(
+                        child: Column(
+                          children: [
+                            // Connection line
+                            Container(
+                              height: 3,
+                              color:
+                                  isCompleted
+                                      ? Colors.orange
+                                      : Colors.grey.shade300,
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Icon and status
+                            Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Container(
+                                  width: 28,
+                                  height: 28,
+                                  decoration: BoxDecoration(
+                                    color:
+                                        isCompleted
+                                            ? Colors.orange
+                                            : Colors.grey.shade300,
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    step['icon'] as IconData,
+                                    size: 14,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                if (isCurrent)
+                                  Positioned(
+                                    right: 0,
+                                    top: 0,
+                                    child: Container(
+                                      width: 10,
+                                      height: 10,
+                                      decoration: const BoxDecoration(
+                                        color: AppColors.errorColor,
+                                        shape: BoxShape.circle,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+
+                            // Label
+                            Text(
+                              step['label'] as String,
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight:
+                                    isCurrent
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                                color:
+                                    isCompleted
+                                        ? Colors.orange
+                                        : Colors.grey.shade600,
+                              ),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+              ),
+
+              // Current status description
+              if (currentIndex >= 0) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.grey.withOpacity(0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.info_outline,
+                        color: AppColors.secondaryColor,
+                        size: 14,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          steps[currentIndex]['description'] as String,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.secondaryColor,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _makeCall(String phoneNumber) async {
+    final url = 'tel:$phoneNumber';
+    if (await canLaunch(url)) {
+      await launch(url);
+    }
+  }
+
+  String _getTowingDisplayPrice(Map<String, dynamic> towing) {
+    final totalAmount = towing['totalAmount'] as num?;
+    final estimatedCost = towing['estimatedCost'] as num?;
+
+    if (totalAmount != null && totalAmount > 0) {
+      return 'RM ${totalAmount.toStringAsFixed(2)}';
+    } else if (estimatedCost != null && estimatedCost > 0) {
+      return 'RM ${estimatedCost.toStringAsFixed(2)}';
+    } else {
+      return 'RM 0.00';
+    }
+  }
+
+  Widget _buildPricingCard(Map<String, dynamic> towing) {
+    final pricingBreakdown = _safeMapConversion(towing['pricingBreakdown']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Pricing Breakdown',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (pricingBreakdown.isNotEmpty) ...[
+            _buildPricingRow(
+              'Base Fee',
+              _formatCurrency(pricingBreakdown['baseFee']),
+            ),
+            _buildPricingRow(
+              'Distance Cost',
+              _formatCurrency(pricingBreakdown['distanceCost']),
+              description:
+                  '${pricingBreakdown['distanceInKm']} km × RM ${pricingBreakdown['perKmRate']}/km',
+            ),
+            if (pricingBreakdown['luxurySurcharge'] != null)
+              _buildPricingRow(
+                'Luxury Surcharge',
+                _formatCurrency(pricingBreakdown['luxurySurcharge']),
+              ),
+            const Divider(),
+            const SizedBox(height: 8),
+            _buildPricingRow(
+              'Estimated Cost',
+              _formatCurrency(towing['estimatedCost']),
+              isTotal: true,
+            ),
+            if (towing['finalCost'] != null)
+              _buildPricingRow(
+                'Final Cost',
+                _formatCurrency(towing['finalCost']),
+                isTotal: true,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _formatCurrency(double? amount) {
+    if (amount == null) return 'RM 0.00';
+    return 'RM ${amount.toStringAsFixed(2)}';
+  }
+
+  Widget _buildPricingRow(
+    String label,
+    String value, {
+    bool isTotal = false,
+    String? description,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: isTotal ? 16 : 14,
+                  fontWeight: isTotal ? FontWeight.bold : FontWeight.w500,
+                  color:
+                      isTotal
+                          ? AppColors.primaryColor
+                          : AppColors.secondaryColor,
+                ),
+              ),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: isTotal ? 16 : 14,
+                  fontWeight: isTotal ? FontWeight.bold : FontWeight.w600,
+                  color:
+                      isTotal
+                          ? AppColors.primaryColor
+                          : AppColors.secondaryColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (description != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.textMuted,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTowingPaymentInfoCard(Map<String, dynamic> towing) {
+    final paymentStatus = towing['paymentStatus'] as String? ?? 'unpaid';
+    final paymentMethod = towing['paymentMethod'] as String? ?? 'N/A';
+    final paidAmount = towing['paidAmount'] as double? ?? 0.0;
+    final hasPayment = towing['hasPayment'] == true;
+    final totalAmount = towing['totalAmount'] as double? ?? 0.0;
+    final estimatedCost = towing['estimatedCost'] as double? ?? 0.0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Payment Information',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Amount Information
+          _buildPricingRow('Estimated Cost', _formatCurrency(estimatedCost)),
+          if (totalAmount > 0 && totalAmount != estimatedCost)
+            _buildPricingRow(
+              'Final Cost',
+              _formatCurrency(totalAmount),
+              isTotal: true,
+            ),
+
+          const SizedBox(height: 12),
+
+          // Payment Status
+          if (towing['status'] != 'cancelled' &&
+              towing['status'] != 'declined') ...[
+            Row(
+              children: [
+                Expanded(
+                  child: _buildCompactPaymentDetail(
+                    'Status',
+                    _getPaymentStatusText(paymentStatus),
+                    _getPaymentStatusColor(paymentStatus),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildCompactPaymentDetail(
+                    'Method',
+                    paymentMethod.toUpperCase(),
+                    Colors.grey.shade700,
+                  ),
+                ),
+              ],
+            ),
+            if (hasPayment && paidAmount > 0) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildCompactPaymentDetail(
+                      'Paid Amount',
+                      'RM${paidAmount.toStringAsFixed(2)}',
+                      AppColors.primaryColor,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationCard(Map<String, dynamic> towing) {
+    final location = _safeMapConversion(towing['location']);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Location Details',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (location['customer'] != null) ...[
+            const Text(
+              'Pickup Location:',
+              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            if (location['customer']['address'] != null) ...[
+              _buildDetailRow(
+                'Address',
+                location['customer']['address']['full'] ?? 'N/A',
+              ),
+              if (location['customer']['address']['street'] != null)
+                _buildDetailRow(
+                  'Street',
+                  location['customer']['address']['street'],
+                ),
+              if (location['customer']['address']['city'] != null)
+                _buildDetailRow(
+                  'City',
+                  location['customer']['address']['city'],
+                ),
+              if (location['customer']['address']['state'] != null)
+                _buildDetailRow(
+                  'State',
+                  location['customer']['address']['state'],
+                ),
+            ],
+          ],
+          if (towing['distance'] != null)
+            _buildDetailRow(
+              'Distance to Service Center',
+              '${towing['distance'].toStringAsFixed(1)} km',
+            ),
+          if (towing['coverageArea'] != null)
+            _buildDetailRow('Coverage Area', '${towing['coverageArea']} km'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServiceDetailsCard(Map<String, dynamic> towing) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Service Details',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildDetailRow('Towing Type', towing['towingType'] ?? 'N/A'),
+          _buildDetailRow(
+            'Service Center',
+            towing['serviceCenterName'] ?? 'N/A',
+          ),
+          if (towing['responseTime'] != null)
+            _buildDetailRow(
+              'Response Time',
+              '${towing['responseTime']} minutes',
+            ),
+          if (towing['estimatedDuration'] != null)
+            _buildDetailRow(
+              'Estimated Duration',
+              '${towing['estimatedDuration']} minutes',
+            ),
+          if (towing['description']?.isNotEmpty == true)
+            _buildDetailRow('Description', towing['description']),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusTimeline(Map<String, dynamic> towing) {
+    final statusHistory = towing['statusHistory'] ?? [];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Request Timeline',
+            style: TextStyle(
+              color: AppColors.secondaryColor,
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (statusHistory.isNotEmpty) ...[
+            ...statusHistory
+                .map<Widget>(
+                  (history) => _buildTimelineItem(
+                    history['status'] ?? '',
+                    history['timestamp'] ?? Timestamp.now(),
+                    history['notes'] ?? '',
+                  ),
+                )
+                .toList(),
+          ] else ...[
+            Text(
+              'No timeline available',
+              style: TextStyle(
+                color: Colors.grey.shade600,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimelineItem(String status, Timestamp timestamp, String notes) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 12,
+            height: 12,
+            margin: const EdgeInsets.only(top: 4),
+            decoration: BoxDecoration(
+              color: _getStatusColor(status),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _getTowingStatusMessage(status),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  _formatTimestamp(timestamp),
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                ),
+                if (notes.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    notes,
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 12,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _cancelTowingRequest(Map<String, dynamic> towing) {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Cancel Request'),
+            content: const Text(
+              'Are you sure you want to cancel this towing request?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  try {
+                    await FirebaseFirestore.instance
+                        .collection('towing_requests')
+                        .doc(towing['id'] as String)
+                        .update({
+                          'status': 'cancelled',
+                          'updatedAt': FieldValue.serverTimestamp(),
+                          'statusHistory': FieldValue.arrayUnion([
+                            {
+                              'status': 'cancelled',
+                              'timestamp': Timestamp.now(),
+                              'updatedBy': 'customer',
+                              'notes': 'Request cancelled by customer',
+                            },
+                          ]),
+                        });
+                    Navigator.pop(context);
+                    Navigator.pop(context); // Close the details sheet
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Failed to cancel request')),
+                    );
+                  }
+                },
+                child: const Text('Yes, Cancel'),
+              ),
+            ],
+          ),
+    );
+  }
+
   void _showReviewDialog(Map<String, dynamic> item) {
     final isService = item['type'] == 'service';
-    final itemId = item['id'] as String?;
-    final serviceCenterId =
-        isService
-            ? item['serviceCenterId'] as String?
-            : item['serviceCenterId'] as String?;
     final serviceCenterName = item['serviceCenterName'] as String?;
-
-    // Check if already has a review
     final hasRating = item['rating'] != null;
 
     int selectedRating = 0;
     TextEditingController reviewController = TextEditingController();
 
-    // If already has a review, pre-fill the data
     if (hasRating) {
       final ratingData = item['rating'] as Map<String, dynamic>;
       selectedRating = (ratingData['stars'] as num?)?.toInt() ?? 0;
@@ -3555,83 +4926,89 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           (context) => StatefulBuilder(
             builder: (context, setState) {
               return AlertDialog(
-                title: Text(
-                  hasRating
-                      ? 'Update Your ${isService ? 'Service' : 'Towing'} Review'
-                      : 'Rate Your ${isService ? 'Service' : 'Towing'} Experience',
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: secondaryColor,
-                  ),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hasRating
+                          ? 'Update Your Review'
+                          : 'Share Your Experience',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.secondaryColor,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      serviceCenterName ?? 'Service Provider',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.primaryColor,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 ),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      serviceCenterName ?? 'Service Center',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: primaryColor,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
                     // Star Rating
                     const Text(
                       'How would you rate your experience?',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(5, (index) {
-                        return GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              selectedRating = index + 1;
-                            });
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 4.0,
+                    const SizedBox(height: 8),
+                    Center(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(5, (index) {
+                          return GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                selectedRating = index + 1;
+                              });
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4.0,
+                              ),
+                              child: Icon(
+                                index < selectedRating
+                                    ? Icons.star
+                                    : Icons.star_border,
+                                color: Colors.amber,
+                                size: 32,
+                              ),
                             ),
-                            child: Icon(
-                              index < selectedRating
-                                  ? Icons.star
-                                  : Icons.star_border,
-                              color: Colors.amber,
-                              size: 28,
-                            ),
-                          ),
-                        );
-                      }),
+                          );
+                        }),
+                      ),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
 
                     // Review Comment
                     const Text(
-                      'Additional comments (optional):',
+                      'Share your feedback (optional):',
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 14,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     TextField(
                       controller: reviewController,
-                      maxLines: 3,
+                      maxLines: 4,
                       decoration: InputDecoration(
-                        hintText: 'Share your experience...',
+                        hintText: 'Tell us about your experience...',
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        contentPadding: const EdgeInsets.all(10),
+                        contentPadding: const EdgeInsets.all(12),
                       ),
                     ),
                   ],
@@ -3655,7 +5032,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                             )
                             : null,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
+                      backgroundColor: AppColors.primaryColor,
                       foregroundColor: Colors.white,
                     ),
                     child: Text(hasRating ? 'Update Review' : 'Submit Review'),
@@ -3678,7 +5055,6 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
       final itemId = item['id'] as String?;
       final collectionName = isService ? 'service_bookings' : 'towing_requests';
 
-      // Get service center info
       String? serviceCenterId;
       String? serviceCenterName;
 
@@ -3694,11 +5070,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         throw Exception('Item ID is null');
       }
 
-      // Create review ID
-      final reviewId =
-          FirebaseFirestore.instance.collection('reviews').doc().id;
+      final reviewId = FirebaseFirestore.instance.collection('reviews').doc().id;
 
-      // Prepare complete review data
       final reviewData = {
         'id': reviewId,
         'serviceCenterId': serviceCenterId,
@@ -3721,13 +5094,11 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
-      // 1. Save to main reviews collection
       await FirebaseFirestore.instance
           .collection('reviews')
           .doc(reviewId)
           .set(reviewData);
 
-      // 2. Save to service center's reviews subcollection
       if (serviceCenterId != null) {
         await FirebaseFirestore.instance
             .collection('service_centers')
@@ -3737,7 +5108,6 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             .set(reviewData);
       }
 
-      // 3. Update the original booking with minimal rating data
       final minimalRatingData = {
         'reviewId': reviewId,
         'stars': rating,
@@ -3754,12 +5124,10 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
             'updatedAt': FieldValue.serverTimestamp(),
           });
 
-      // 4. Update service center's average rating
       if (serviceCenterId != null) {
         await _updateServiceCenterRating(serviceCenterId);
       }
 
-      // Show success and reload
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -3834,7 +5202,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                               height: 3,
                               color:
                                   isCompleted
-                                      ? primaryColor
+                                      ? AppColors.primaryColor
                                       : Colors.grey.shade300,
                             ),
                           ),
@@ -3847,7 +5215,9 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         step['icon'] as IconData,
                         size: 16,
                         color:
-                            isCompleted ? primaryColor : Colors.grey.shade400,
+                            isCompleted
+                                ? AppColors.primaryColor
+                                : Colors.grey.shade400,
                       ),
                       const SizedBox(height: 2),
                       Text(
@@ -3855,7 +5225,9 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         style: TextStyle(
                           fontSize: 10,
                           color:
-                              isCompleted ? primaryColor : Colors.grey.shade500,
+                              isCompleted
+                                  ? AppColors.primaryColor
+                                  : Colors.grey.shade500,
                           fontWeight:
                               isCurrent ? FontWeight.bold : FontWeight.normal,
                         ),
@@ -3889,16 +5261,86 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     }
   }
 
+  String _formatServiceType(String serviceType) {
+    switch (serviceType) {
+      case 'engine_oil':
+        return 'Engine Oil Change';
+      case 'alignment':
+        return 'Wheel Alignment';
+      case 'battery':
+        return 'Battery Replacement';
+      case 'tire_rotation':
+        return 'Tire Rotation';
+      case 'coolant':
+        return 'Coolant Flush';
+      case 'gear_oil':
+        return 'Gear Oil';
+      case 'at_fluid':
+        return 'AT Fluid';
+      default:
+        return serviceType.replaceAll('_', ' ').toTitleCase();
+    }
+  }
+
+  String _getStatusMessage(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Waiting for service center confirmation';
+      case 'assigned':
+        return 'A technician and bay has been assigned to you';
+      case 'confirmed':
+        return 'Appointment confirmed and scheduled';
+      case 'in_progress':
+        return 'Service in progress';
+      case 'ready_to_collect':
+        return 'Your vehicle is ready to collect';
+      case 'completed':
+        return 'Service completed';
+      case 'cancelled':
+        return 'Appointment cancelled';
+      case 'invoice_generated':
+        return 'Invoice has been generated please review before proceed to payment';
+      case 'declined':
+        return 'Booking has been declined by service center';
+      default:
+        return 'Status unknown';
+    }
+  }
+
+  String _getTowingStatusMessage(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Looking for available driver...';
+      case 'accepted':
+        return 'Your towing request has been accepted';
+      case 'dispatched':
+        return 'Driver assigned and on the way';
+      case 'ongoing':
+        return 'Driver has arrived at your location';
+      case 'completed':
+        return 'Towing service completed';
+      case 'decline':
+        return 'Your request has been declined';
+      case 'cancelled':
+        return 'Request cancelled';
+      case ' invoice_generated':
+        return 'Your invoice has generated, and ready to collect your car';
+      default:
+        return 'Status unknown';
+    }
+  }
+
   String _getStatusText(String status) {
     switch (status) {
       case 'pending':
         return 'Pending';
+      //   service booking
       case 'confirmed':
         return 'Confirmed';
       case 'assigned':
         return 'Assigned';
       case 'in_progress':
-        return 'In Progress';
+        return 'Service in Progress';
       case 'ready_to_collect':
         return 'Ready to Collect';
       case 'completed':
@@ -3907,6 +5349,13 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         return 'Declined';
       case 'cancelled':
         return 'Cancelled';
+      case 'invoice_generated':
+        return 'Invoice Generated';
+      //   towing request
+      case 'accepted':
+        return 'Accepted';
+      case 'dispatched':
+        return 'On the way';
       default:
         return status;
     }
@@ -3915,13 +5364,17 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   String _getPaymentStatusText(String status) {
     switch (status) {
       case 'pending':
-        return 'Pending';
+        return 'Awaiting Payment';
+      case 'unpaid':
+        return 'Awaiting Payment';
       case 'paid':
-        return 'Paid';
+        return 'Payment Completed';
       case 'failed':
-        return 'Failed';
+        return 'Payment Failed';
       case 'refunded':
-        return 'Refunded';
+        return 'Payment Refunded';
+      case 'partially_paid':
+        return 'Partially Paid';
       default:
         return status;
     }
@@ -3931,10 +5384,16 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
     switch (status) {
       case 'paid':
         return Colors.green;
+      case 'unpaid':
+        return Colors.red;
       case 'failed':
         return Colors.red;
       case 'refunded':
         return Colors.orange;
+      case 'partially_paid':
+        return Colors.amber;
+      case 'pending':
+        return Colors.red;
       default:
         return Colors.grey;
     }
@@ -3946,9 +5405,11 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         return Colors.orange;
       case 'confirmed':
       case 'assigned':
+      case 'dispatched':
         return Colors.blue;
       case 'in_progress':
         return Colors.indigo;
+      case 'invoice_generated':
       case 'ready_to_collect':
         return Colors.purple;
       case 'completed':

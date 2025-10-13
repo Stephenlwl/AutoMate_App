@@ -320,7 +320,6 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
 
       if (offers.isEmpty) return [];
 
-      // Get unique service IDs
       final serviceOfferIds =
           offers
               .where((offer) => offer.serviceId.isNotEmpty)
@@ -330,7 +329,6 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
 
       if (serviceOfferIds.isEmpty) return [];
 
-      // Fetch service details in batches (Firestore has a limit of 10 for whereIn)
       final List<Map<String, dynamic>> allServices = [];
       for (int i = 0; i < serviceOfferIds.length; i += 10) {
         final batch = serviceOfferIds.skip(i).take(10).toList();
@@ -369,7 +367,7 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
         }
       }
 
-      // Create unique services with all details
+      // Create services with all details
       final List<models.ServiceOffer> servicesOffer = [];
       for (var service in allServices) {
         final serviceId = service['id'];
@@ -911,22 +909,6 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
 
   Color _getStatusColor(bool isOpen) {
     return isOpen ? AppColors.successColor : AppColors.errorColor;
-  }
-
-  Future<int> _getReviewCount(String centerId) async {
-    try {
-      final query =
-          await FirebaseFirestore.instance
-              .collection('reviews')
-              .where('serviceCenterId', isEqualTo: centerId)
-              .where('status', isEqualTo: 'approved')
-              .get();
-
-      return query.docs.length;
-    } catch (e) {
-      debugPrint('Error getting review count: $e');
-      return 0;
-    }
   }
 
   @override

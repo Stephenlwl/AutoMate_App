@@ -1,4 +1,3 @@
-
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:convert';
 
@@ -6,7 +5,7 @@ class NotificationModel {
   final String id;
   final String title;
   final String body;
-  final String type; // 'service_booking', 'towing_request', 'payment', 'system'
+  final String type;
   final Map<String, dynamic> data;
   final DateTime timestamp;
   final bool isRead;
@@ -72,5 +71,43 @@ class NotificationModel {
       timestamp: timestamp,
       isRead: isRead ?? this.isRead,
     );
+  }
+
+  bool get isServiceReminder => type == 'service_reminder';
+  bool get isServiceBooking => type == 'service_booking';
+  bool get isTowingRequest => type == 'towing_request';
+  bool get isPayment => type == 'payment';
+
+  String get reminderDetails {
+    if (!isServiceReminder) return '';
+
+    final reminderType = data['reminderType'] ?? '';
+    final serviceType = data['serviceType'] ?? '';
+    final vehicleInfo = data['vehicleInfo'] ?? '';
+
+    switch (reminderType) {
+      case 'mileage':
+        final current = data['currentMileage'] ?? 0;
+        final due = data['dueMileage'] ?? 0;
+        return 'Mileage: $current/$due km';
+      case 'date':
+        final days = data['daysUntilDue'] ?? 0;
+        return 'Due in $days days';
+      case 'overdue':
+        final days = data['daysOverdue'] ?? 0;
+        return 'Overdue by $days days';
+      default:
+        return '';
+    }
+  }
+
+  String get vehicleInfo {
+    return data['vehicleInfo']?.toString() ??
+        data['vehicle']?.toString() ??
+        'Your Vehicle';
+  }
+
+  String get serviceType {
+    return data['serviceType']?.toString() ?? 'Service';
   }
 }

@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:automate_application/model/notification_model.dart';
 import '../blocs/notification_bloc.dart';
 import '../globals/navigation_service.dart';
+import 'notification_listener_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -14,25 +15,42 @@ class NotificationService {
 
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
   final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
+  NotificationListenerService? _listenerService;
+
+    String? _userId;
+    String? _userName;
+    String? _userEmail;
 
   // Initialize notifications
-  Future<void> initialize() async {
+  Future<void> initialize(NotificationBloc notificationBloc, {String? userId, String? userName, String? userEmail}) async {
+    // Initialize listener service with bloc
+    _listenerService = NotificationListenerService(notificationBloc);
+
+    _userId = userId;
+    _userName = userName;
+    _userEmail = userEmail;
+
+    _listenerService = NotificationListenerService(notificationBloc);
+
     // Request permissions
     NotificationSettings settings = await _firebaseMessaging.requestPermission(
       alert: true,
       badge: true,
       sound: true,
+      provisional: true, // Request provisional permission for iOS
     );
 
-    if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-      debugPrint('Notification permissions granted');
-    }
+    debugPrint('Notification permission status: ${settings.authorizationStatus}');
 
     // Initialize local notifications
     const AndroidInitializationSettings androidSettings =
     AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings iosSettings =
-    DarwinInitializationSettings();
+    DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
     const InitializationSettings initializationSettings =
     InitializationSettings(
       android: androidSettings,
@@ -42,10 +60,12 @@ class NotificationService {
     await _localNotifications.initialize(
       initializationSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        // Handle notification tap
         _onNotificationTap(response);
       },
     );
+
+    // Create notification channel for Android
+    await _createNotificationChannel();
 
     // Configure message handling
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
@@ -54,6 +74,7 @@ class NotificationService {
     // Get device token
     String? token = await _firebaseMessaging.getToken();
     if (token != null) {
+      debugPrint('Device Token: $token');
       await _saveDeviceToken(token);
     }
 
@@ -61,31 +82,56 @@ class NotificationService {
     _firebaseMessaging.onTokenRefresh.listen(_saveDeviceToken);
   }
 
+  Future<void> _createNotificationChannel() async {
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'automate_channel',
+      'AutoMate Notifications',
+      description: 'Notifications for service bookings and towing requests',
+      importance: Importance.high,
+    );
+
+    await _localNotifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+  }
+
   Future<void> _saveDeviceToken(String token) async {
-    // Save token to user's document in Firestore
-    // You'll need to get the current user ID
-    debugPrint('Device Token: $token');
+    if (_userId != null) {
+      // Save token to user's document in Firestore
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(_userId)
+            .update({
+          'fcmToken': token,
+          'tokenUpdatedAt': FieldValue.serverTimestamp(),
+        });
+        debugPrint('Device token saved for user: $_userId');
+      } catch (e) {
+        debugPrint('Error saving device token: $e');
+      }
+    }
   }
 
   void _onForegroundMessage(RemoteMessage message) {
+    debugPrint('Foreground message received: ${message.messageId}');
     _showLocalNotification(message);
+
     // Update local notification state
-    NotificationBloc().add(NewNotificationEvent(
-        NotificationModel.fromRemoteMessage(message)
-    ));
+    final notification = NotificationModel.fromRemoteMessage(message);
   }
 
   void _onBackgroundMessageOpened(RemoteMessage message) {
-    // Handle when app is opened from terminated state
+    debugPrint('App opened from background: ${message.messageId}');
     _handleNotificationAction(NotificationModel.fromRemoteMessage(message));
   }
 
   void _onNotificationTap(NotificationResponse response) {
-    // Handle local notification tap
+    debugPrint('Notification tapped: ${response.payload}');
+
     final payload = response.payload;
     if (payload != null) {
       try {
-        // Parse the JSON string back to a Map
         final payloadMap = json.decode(payload) as Map<String, dynamic>;
         final notification = NotificationModel.fromJson(payloadMap);
         _handleNotificationAction(notification);
@@ -96,38 +142,49 @@ class NotificationService {
   }
 
   Future<void> _showLocalNotification(RemoteMessage message) async {
-    final notification = NotificationModel.fromRemoteMessage(message);
+    try {
+      final notification = NotificationModel.fromRemoteMessage(message);
 
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'automate_channel',
-      'AutoMate Notifications',
-      channelDescription: 'Notifications for service bookings and towing requests',
-      importance: Importance.high,
-      priority: Priority.high,
-      colorized: true,
-      color: Color(0xFFFF6B00),
-    );
+      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+        'automate_channel',
+        'AutoMate Notifications',
+        channelDescription: 'Notifications for service bookings and towing requests',
+        importance: Importance.high,
+        priority: Priority.high,
+        colorized: true,
+        color: Color(0xFFFF6B00),
+      );
 
-    const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
+      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
 
-    const NotificationDetails details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
+      const NotificationDetails details = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
 
-    await _localNotifications.show(
-      notification.id.hashCode,
-      notification.title,
-      notification.body,
-      details,
-      payload: json.encode(notification.toJson()),
-    );
+      await _localNotifications.show(
+        notification.id.hashCode,
+        notification.title,
+        notification.body,
+        details,
+        payload: json.encode(notification.toJson()),
+      );
+
+      debugPrint('Local notification shown: ${notification.title}');
+    } catch (e) {
+      debugPrint('Error showing local notification: $e');
+    }
   }
 
   void _handleNotificationAction(NotificationModel notification) {
-    // Navigate based on notification type
+    debugPrint('Handling notification action: ${notification.type}');
+
+    // Use navigatorKey to get context
     final context = navigatorKey.currentContext;
-    if (context == null) return;
+    if (context == null) {
+      debugPrint('No context available for navigation');
+      return;
+    }
 
     switch (notification.type) {
       case 'service_booking':
@@ -138,11 +195,37 @@ class NotificationService {
         Navigator.pushNamed(context, '/towing-details',
             arguments: {'requestId': notification.data['requestId']});
         break;
-      case 'payment':
-        Navigator.pushNamed(context, '/payment-details',
-            arguments: {'paymentId': notification.data['paymentId']});
+      case 'service_reminder':
+        if (_userId != null && _userName != null && _userEmail != null) {
+          Navigator.pushNamed(
+            context,
+            'search-service-center',
+            arguments: {
+              'userId': _userId,
+              'userName': _userName,
+              'userEmail': _userEmail,
+            },
+          );
+        } else {
+          debugPrint('User data not available for navigation');
+          Navigator.pushNamed(context, '/notifications');
+        }
+        break;
+      default:
+      // Navigate to notifications page for general notifications
+        Navigator.pushNamed(context, '/notifications');
         break;
     }
+  }
+
+  // Start listening to real-time updates for a specific user
+  void startListeningToUserUpdates(String userId) {
+    _listenerService?.startListening(userId);
+  }
+
+  // Stop listening
+  void stopListening() {
+    _listenerService?.stopListening();
   }
 
   // Subscribe to topics
@@ -150,6 +233,7 @@ class NotificationService {
     await _firebaseMessaging.subscribeToTopic('user_$userId');
     await _firebaseMessaging.subscribeToTopic('service_bookings');
     await _firebaseMessaging.subscribeToTopic('towing_requests');
+    debugPrint('Subscribed to topics for user: $userId');
   }
 
   // Unsubscribe from topics

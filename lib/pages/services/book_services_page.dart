@@ -1,9 +1,16 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart' hide Key;
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:automate_application/model/service_center_model.dart';
 import 'package:automate_application/model/service_center_services_offer_model.dart';
 import 'package:automate_application/model/service_center_service_package_offer_model.dart';
+import 'package:stream_chat/stream_chat.dart';
+
+import '../../blocs/notification_bloc.dart';
+import '../homepage/homepage.dart';
 
 class TimeRange {
   final TimeOfDay start;
@@ -46,12 +53,17 @@ class BookServicePage extends StatefulWidget {
 
 class _BookServicePageState extends State<BookServicePage> {
   final PageController _pageController = PageController();
-  int currentStep = 0;
+  String userName = '';
+  String userEmail = '';
+  final chatClient = StreamChatClient(
+    '3mj9hufw92nk',
+    logLevel: Level.INFO,
+  );
 
+  int currentStep = 0;
   Map<String, Map<String, dynamic>> offerTiers = {};
   Map<String, Map<String, dynamic>> effectivePricing = {};
 
-  // Add these two missing maps
   Map<String, int> packageDurations = {};
   Map<String, Map<String, double>> packagePricing = {};
 
@@ -64,7 +76,7 @@ class _BookServicePageState extends State<BookServicePage> {
   DateTime? selectedDate;
   TimeOfDay? selectedTime;
   String urgencyLevel = 'normal';
-  String additionalNotes = '';
+  String additionalNotes = 'No additional note';
 
   String _normalize(String s) => s.toLowerCase().trim();
 
@@ -78,10 +90,45 @@ class _BookServicePageState extends State<BookServicePage> {
   List<String> existingBookings = [];
   bool loading = false;
   bool servicesLoading = false;
+  double subTotal = 0.0;
+  double sst = 0.08;
   double totalFixedPrice = 0.0;
-  String totalRangePrice = '';
+  double totalRangePriceMin = 0.0;
+  double totalRangePriceMax = 0.0;
   bool isServiceCenterOpen = false;
   int totalEstimatedDuration = 0; // in minutes
+  bool _showAllServices = false;
+
+  Color _getServiceColor(String serviceName) {
+    final name = serviceName.toLowerCase();
+    if (name.contains('brake')) return AppColors.errorColor;
+    if (name.contains('engine')) return Colors.redAccent;
+    if (name.contains('oil')) return Colors.orangeAccent;
+    if (name.contains('tire') || name.contains('tyre'))
+      return Colors.blueAccent;
+    if (name.contains('battery')) return Colors.green;
+    if (name.contains('air conditioning') || name.contains('ac'))
+      return Colors.cyan;
+    if (name.contains('transmission')) return Colors.purple;
+    if (name.contains('suspension')) return Colors.indigo;
+    return AppColors.accentColor;
+  }
+
+  IconData _getServiceIcon(String serviceName) {
+    final name = serviceName.toLowerCase();
+    if (name.contains('brake')) return Icons.disc_full;
+    if (name.contains('engine')) return Icons.build_circle;
+    if (name.contains('oil')) return Icons.local_gas_station;
+    if (name.contains('tire') || name.contains('tyre'))
+      return Icons.tire_repair;
+    if (name.contains('battery')) return Icons.battery_charging_full;
+    if (name.contains('air conditioning') || name.contains('ac'))
+      return Icons.ac_unit;
+    if (name.contains('transmission')) return Icons.settings;
+    if (name.contains('suspension')) return Icons.drive_eta;
+    if (name.contains('diagnostic')) return Icons.search;
+    return Icons.build;
+  }
 
   @override
   void initState() {
@@ -114,6 +161,8 @@ class _BookServicePageState extends State<BookServicePage> {
 
         setState(() {
           userVehicles = approvedVehicles;
+          userName = data['name'];
+          userEmail = data['email'];
         });
       }
     } catch (e) {
@@ -176,13 +225,18 @@ class _BookServicePageState extends State<BookServicePage> {
     }
 
     final dayNames = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-      'Friday', 'Saturday', 'Sunday'
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
     ];
     final dayName = dayNames[date.weekday - 1];
 
     final dayHours = widget.serviceCenter.operatingHours.firstWhere(
-          (hours) => hours['day'] == dayName,
+      (hours) => hours['day'] == dayName,
       orElse: () => {},
     );
 
@@ -192,8 +246,13 @@ class _BookServicePageState extends State<BookServicePage> {
   void _checkServiceCenterStatus() {
     final now = DateTime.now();
     final dayNames = [
-      'Monday', 'Tuesday', 'Wednesday', 'Thursday',
-      'Friday', 'Saturday', 'Sunday'
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
     ];
     final currentDay = dayNames[now.weekday - 1];
 
@@ -283,7 +342,16 @@ class _BookServicePageState extends State<BookServicePage> {
               .collection('service_bookings')
               .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
               .where('scheduledDate', isEqualTo: Timestamp.fromDate(date))
-              .where('status', whereIn: ['pending', 'confirmed', 'assigned', 'in_progress', 'ready_to_collect'])
+              .where(
+                'status',
+                whereIn: [
+                  'pending',
+                  'confirmed',
+                  'assigned',
+                  'in_progress',
+                  'ready_to_collect',
+                ],
+              )
               .get();
 
       for (var doc in query.docs) {
@@ -356,7 +424,7 @@ class _BookServicePageState extends State<BookServicePage> {
       List<TimeOfDay> slots = [];
 
       if (_isMultiDayService(date)) {
-        // For multi-day services, we need to check consecutive days
+        // For multi-day services need to check consecutive days
         slots = await _findMultiDayTimeSlots(date);
       } else {
         // For single day services, use the original logic
@@ -407,7 +475,7 @@ class _BookServicePageState extends State<BookServicePage> {
   Future<List<TimeOfDay>> _findMultiDayTimeSlots(DateTime startDate) async {
     List<TimeOfDay> availableSlots = [];
 
-    // Calculate how many days we need based on actual operating hours
+    // Calculate how many days based on actual operating hours
     int totalDaysNeeded = 1;
     int remainingDuration = totalEstimatedDuration;
 
@@ -427,7 +495,7 @@ class _BookServicePageState extends State<BookServicePage> {
       }
     }
 
-    // Check if we have enough consecutive available days
+    // Check if have enough consecutive available days
     for (int dayOffset = 0; dayOffset < totalDaysNeeded; dayOffset++) {
       DateTime currentDate = startDate.add(Duration(days: dayOffset));
       if (_isDateClosed(currentDate)) {
@@ -543,7 +611,7 @@ class _BookServicePageState extends State<BookServicePage> {
         final occupiedStart = occupied.start.hour * 60 + occupied.start.minute;
         final occupiedEnd = occupied.end.hour * 60 + occupied.end.minute;
 
-        // Check if our service time conflicts with occupied slot
+        // Check if service time conflicts with occupied slot
         if (dayStartMinutes < occupiedEnd &&
             (dayStartMinutes +
                     remainingDuration.clamp(0, availableMinutesToday)) >
@@ -552,7 +620,7 @@ class _BookServicePageState extends State<BookServicePage> {
         }
       }
 
-      // Deduct the time we can use today from remaining duration
+      // Deduct the time can use today from remaining duration
       final int timeUsedToday = remainingDuration.clamp(
         0,
         availableMinutesToday,
@@ -620,19 +688,10 @@ class _BookServicePageState extends State<BookServicePage> {
     return slots;
   }
 
-  String _getCategoryNameSync(ServiceCenterServiceOffer service) {
-    // Try to get from cached category names first
-    if (_categoryNameCache.containsKey(service.categoryId)) {
-      return _categoryNameCache[service.categoryId]!;
-    }
-
-    return 'Other Services';
-  }
-
-  // Add this map to cache category names (add this as a class variable)
+  // cache category names
   Map<String, String> _categoryNameCache = {};
 
-  // Method to preload all category names for better performance
+  // Method to preload all category names
   Future<void> _preloadCategoryNames() async {
     try {
       final categoriesQuery =
@@ -1255,7 +1314,7 @@ class _BookServicePageState extends State<BookServicePage> {
         final serviceId = serviceData['serviceId'] as String?;
         if (serviceId == null) continue;
 
-        // Check if we have compatible offers for this service
+        // Check if have compatible offers for this service
         final hasCompatibleOffer = availableServices.any(
           (offer) => offer.serviceId == serviceId,
         );
@@ -1279,22 +1338,33 @@ class _BookServicePageState extends State<BookServicePage> {
     if (selectionType == 'package' && selectedPackage != null) {
       final pricing =
           packagePricing[selectedPackage!.id] ??
-          {'fixedPrice': 0.0, 'minPrice': 0.0, 'maxPrice': 0.0};
+          {
+            'fixedPrice': 0.0,
+            'minPrice': 0.0,
+            'maxPrice': 0.0,
+            'labourPrice': 0.0,
+            'labourPriceMin': 0.0,
+            'labourPriceMax': 0.0,
+            'partPrice': 0.0,
+            'partPriceMin': 0.0,
+            'partPriceMax': 0.0,
+          };
       final duration =
           packageDurations[selectedPackage!.id] ??
           selectedPackage!.estimatedDuration;
 
       setState(() {
         totalEstimatedDuration = duration;
-        totalFixedPrice = pricing['fixedPrice'] ?? 0.0;
+        totalFixedPrice = pricing['labourPrice'] ?? 0.0;
         if (pricing['minPrice'] != null &&
             pricing['maxPrice'] != null &&
             pricing['minPrice']! > 0 &&
             pricing['maxPrice']! > 0) {
-          totalRangePrice =
-              'RM${pricing['minPrice']!.toStringAsFixed(2)} - RM${pricing['maxPrice']!.toStringAsFixed(2)}';
+          totalRangePriceMin = pricing['minPrice']!;
+          totalRangePriceMax = pricing['maxPrice']!;
         } else {
-          totalRangePrice = '';
+          totalRangePriceMin = 0.0;
+          totalRangePriceMax = 0.0;
         }
       });
     } else if (selectionType == 'individual' && selectedServices.isNotEmpty) {
@@ -1321,7 +1391,7 @@ class _BookServicePageState extends State<BookServicePage> {
 
         duration += serviceDuration;
 
-        // Calculate service totals - FIXED: Combine fixed and range pricing properly
+        // Calculate service totals
         double serviceFixed = partPrice + labourPrice;
         double serviceMin = partPriceMin + labourPriceMin;
         double serviceMax = partPriceMax + labourPriceMax;
@@ -1340,29 +1410,31 @@ class _BookServicePageState extends State<BookServicePage> {
         bool hasRangeComponents = totalMax > totalMin && totalMax > 0;
 
         if (hasFixedComponents && hasRangeComponents) {
-          // Show both fixed and range: Fixed price + (Min range - Max range)
+          // Show both fixed and range
           totalFixedPrice = totalFixed;
-          totalRangePrice =
-              'RM${(totalFixed + totalMin).toStringAsFixed(2)} - RM${(totalFixed + totalMax).toStringAsFixed(2)}';
+          totalRangePriceMin = totalFixed + totalMin;
+          totalRangePriceMax = totalFixed + totalMax;
         } else if (hasFixedComponents && !hasRangeComponents) {
           // Only fixed pricing available
           totalFixedPrice = totalFixed;
-          totalRangePrice = '';
+          totalRangePriceMin = 0.0;
+          totalRangePriceMax = 0.0;
         } else if (hasRangeComponents) {
           // Only range pricing available
           totalFixedPrice = 0.0;
-          totalRangePrice =
-              'RM${totalMin.toStringAsFixed(2)} - RM${totalMax.toStringAsFixed(2)}';
+          totalRangePriceMin = totalMin;
+          totalRangePriceMax = totalMax;
         } else {
-          // No pricing information
           totalFixedPrice = 0.0;
-          totalRangePrice = '';
+          totalRangePriceMin = 0.0;
+          totalRangePriceMax = 0.0;
         }
       });
     } else {
       setState(() {
         totalFixedPrice = 0.0;
-        totalRangePrice = '';
+        totalRangePriceMin = 0.0;
+        totalRangePriceMax = 0.0;
         totalEstimatedDuration = 0;
       });
     }
@@ -1425,6 +1497,53 @@ class _BookServicePageState extends State<BookServicePage> {
               ? 'package'
               : 'individual';
 
+      Map<String, dynamic> currentVehicleData = {};
+      List<Map<String, dynamic>> currentServiceMaintenances = [];
+      int? currentVehicleMileage;
+
+      if (selectedVehicleId != null) {
+        final userDoc =
+            await FirebaseFirestore.instance
+                .collection('car_owners')
+                .doc(widget.userId)
+                .get();
+
+        if (userDoc.exists) {
+          final userData = userDoc.data()!;
+          if (userData['vehicles'] != null) {
+            final vehicles = List<Map<String, dynamic>>.from(
+              userData['vehicles'] as List,
+            );
+
+            // Find the selected vehicle
+            final selectedVehicle = vehicles.firstWhere(
+              (vehicle) => vehicle['plateNumber'] == selectedVehicleId,
+              orElse: () => {},
+            );
+
+            if (selectedVehicle.isNotEmpty) {
+              currentVehicleData = selectedVehicle;
+              currentVehicleMileage =
+                  selectedVehicle['lastServiceMileage'] as int?;
+
+              // Get service maintenances
+              if (selectedVehicle['serviceMaintenances'] != null) {
+                currentServiceMaintenances = List<Map<String, dynamic>>.from(
+                  selectedVehicle['serviceMaintenances'] as List,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      String subtotalRange = _calculateSubtotalRange();
+      String sstRange = _calculateSSTRange(subtotalRange);
+      double subtotal = _calculateSubtotal();
+      double sst = _calculateSST();
+      double finalTotal = _calculateFinalTotal();
+      String finalTotalRange = _calculateFinalTotalRange(subtotalRange);
+
       // Prepare booking data
       Map<String, dynamic> bookingData = {
         'userId': widget.userId,
@@ -1438,12 +1557,39 @@ class _BookServicePageState extends State<BookServicePage> {
         'estimatedDuration': totalEstimatedDuration,
         'urgencyLevel': urgencyLevel,
         'additionalNotes': additionalNotes,
+        'subtotal': subtotal,
+        'subtotalRange': subtotalRange,
+        'sstRange': sstRange,
+        'sst': sst,
         'totalFixedPrice': totalFixedPrice,
-        'totalRangePrice': totalRangePrice,
-        'totalAmount': totalFixedPrice,
+        'totalRangePriceMin': totalRangePriceMin,
+        'totalRangePriceMax': totalRangePriceMax,
+        'totalEstAmount':finalTotal,
+        'totalEstAmountRange': finalTotalRange,
+        'currentMileage': currentVehicleMileage ?? 0,
+        'serviceMaintenances': currentServiceMaintenances,
+        'mileageRecordedAt': FieldValue.serverTimestamp(),
         'status': 'pending',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
+        'timestamps': {
+          'requestedAt': Timestamp.now(),
+          'acceptedAt': null,
+          'dispatchedAt': null,
+          'driverAssignedAt': null,
+          'arrivedAtLocationAt': null,
+          'serviceStartedAt': null,
+          'completedAt': null,
+          'cancelledAt': null,
+        },
+        'statusHistory': [
+          {
+            'status': 'pending',
+            'timestamp': Timestamp.now(),
+            'updatedBy': 'customer',
+            'notes': 'Request submitted',
+          },
+        ],
       };
 
       // Store packages data
@@ -1453,7 +1599,17 @@ class _BookServicePageState extends State<BookServicePage> {
             selectedPackage!.estimatedDuration;
         final pricing =
             packagePricing[selectedPackage!.id] ??
-            {'fixedPrice': 0.0, 'minPrice': 0.0, 'maxPrice': 0.0};
+            {
+              'fixedPrice': 0.0,
+              'minPrice': 0.0,
+              'maxPrice': 0.0,
+              'labourPrice': 0.0,
+              'labourPriceMin': 0.0,
+              'labourPriceMax': 0.0,
+              'partPrice': 0.0,
+              'partPriceMin': 0.0,
+              'partPriceMax': 0.0,
+            };
 
         double fixedPrice = pricing['fixedPrice'] ?? 0.0;
         double minPrice = pricing['minPrice'] ?? 0.0;
@@ -1465,6 +1621,12 @@ class _BookServicePageState extends State<BookServicePage> {
             'packageName': selectedPackage!.name,
             'description': selectedPackage!.description,
             'estimatedDuration': packageDuration,
+            'labourPrice': pricing['labourPrice'] ?? 0.0,
+            'labourPriceMin': pricing['labourPriceMin'] ?? 0.0,
+            'labourPriceMax': pricing['labourPriceMax'] ?? 0.0,
+            'partPrice': pricing['partPrice'] ?? 0.0,
+            'partPriceMin': pricing['partPriceMin'] ?? 0.0,
+            'partPriceMax': pricing['partPriceMax'] ?? 0.0,
             'fixedPrice': fixedPrice,
             'rangePrice':
                 minPrice > 0 && maxPrice > 0
@@ -1518,9 +1680,13 @@ class _BookServicePageState extends State<BookServicePage> {
             }).toList();
       }
 
-      await FirebaseFirestore.instance
+      final bookingRef = await FirebaseFirestore.instance
           .collection('service_bookings')
           .add(bookingData);
+
+      if (selectedVehicleId != null && currentVehicleData.isNotEmpty) {
+        await _updateVehicleLastBooking(selectedVehicleId!, bookingRef.id);
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1531,7 +1697,18 @@ class _BookServicePageState extends State<BookServicePage> {
             backgroundColor: AppColors.successColor,
           ),
         );
-        Navigator.of(context).popUntil((route) => route.isFirst);
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(
+            builder: (context) => Homepage(
+                userId: widget.userId,
+                chatClient: chatClient,
+                userName: userName,
+                userEmail: userEmail,
+                notificationBloc: context.read<NotificationBloc>(),
+            ),
+          ),
+              (route) => false,
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -1544,6 +1721,48 @@ class _BookServicePageState extends State<BookServicePage> {
       }
     } finally {
       setState(() => loading = false);
+    }
+  }
+
+  Future<void> _updateVehicleLastBooking(
+    String plateNumber,
+    String bookingId,
+  ) async {
+    try {
+      final userDoc =
+          await FirebaseFirestore.instance
+              .collection('car_owners')
+              .doc(widget.userId)
+              .get();
+
+      if (userDoc.exists) {
+        final userData = userDoc.data()!;
+        if (userData['vehicles'] != null) {
+          final vehicles = List<Map<String, dynamic>>.from(
+            userData['vehicles'] as List,
+          );
+
+          // Find and update the vehicle
+          final updatedVehicles =
+              vehicles.map((vehicle) {
+                if (vehicle['plateNumber'] == plateNumber) {
+                  return {
+                    ...vehicle,
+                    'lastServiceBookingId': bookingId,
+                    'lastServiceBookingAt': Timestamp.now(),
+                  };
+                }
+                return vehicle;
+              }).toList();
+
+          await FirebaseFirestore.instance
+              .collection('car_owners')
+              .doc(widget.userId)
+              .update({'vehicles': updatedVehicles});
+        }
+      }
+    } catch (e) {
+      debugPrint('Error updating vehicle last booking: $e');
     }
   }
 
@@ -1691,7 +1910,6 @@ class _BookServicePageState extends State<BookServicePage> {
               final index = entry.key;
               final vehicle = entry.value;
 
-              // Try different possible field names for vehicle ID
               final vehicleId = vehicle['plateNumber'] ?? index.toString();
 
               final isSelected = selectedVehicleId == vehicleId;
@@ -1702,9 +1920,10 @@ class _BookServicePageState extends State<BookServicePage> {
                   color: AppColors.cardColor,
                   borderRadius: BorderRadius.circular(20),
                   elevation: isSelected ? 8 : 2,
-                  shadowColor: isSelected
-                      ? AppColors.primaryColor.withOpacity(0.3)
-                      : Colors.black.withOpacity(0.1),
+                  shadowColor:
+                      isSelected
+                          ? AppColors.primaryColor.withOpacity(0.3)
+                          : Colors.black.withOpacity(0.1),
                   child: InkWell(
                     borderRadius: BorderRadius.circular(20),
                     onTap: () {
@@ -1718,16 +1937,19 @@ class _BookServicePageState extends State<BookServicePage> {
                       _loadServicesForVehicle();
 
                       debugPrint('Selected vehicle ID: $vehicleId');
-                      debugPrint('Selected vehicle: ${vehicle['make']} ${vehicle['model']}');
+                      debugPrint(
+                        'Selected vehicle: ${vehicle['make']} ${vehicle['model']}',
+                      );
                     },
                     child: Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: isSelected
-                              ? AppColors.primaryColor
-                              : AppColors.borderColor,
+                          color:
+                              isSelected
+                                  ? AppColors.primaryColor
+                                  : AppColors.borderColor,
                           width: isSelected ? 2 : 1,
                         ),
                       ),
@@ -1738,8 +1960,8 @@ class _BookServicePageState extends State<BookServicePage> {
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
                               color: (isSelected
-                                  ? AppColors.primaryColor
-                                  : AppColors.textMuted)
+                                      ? AppColors.primaryColor
+                                      : AppColors.textMuted)
                                   .withOpacity(0.1),
                               borderRadius: BorderRadius.circular(16),
                             ),
@@ -1748,8 +1970,8 @@ class _BookServicePageState extends State<BookServicePage> {
                               height: 90,
                               width: 90,
                               fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  Container(
+                              errorBuilder:
+                                  (context, error, stackTrace) => Container(
                                     height: 70,
                                     width: 50,
                                     decoration: BoxDecoration(
@@ -1774,9 +1996,10 @@ class _BookServicePageState extends State<BookServicePage> {
                                   style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
-                                    color: isSelected
-                                        ? AppColors.primaryColor
-                                        : AppColors.textPrimary,
+                                    color:
+                                        isSelected
+                                            ? AppColors.primaryColor
+                                            : AppColors.textPrimary,
                                   ),
                                 ),
                                 const SizedBox(height: 8),
@@ -1804,22 +2027,27 @@ class _BookServicePageState extends State<BookServicePage> {
                           Container(
                             padding: const EdgeInsets.all(8),
                             decoration: BoxDecoration(
-                              color: isSelected
-                                  ? AppColors.primaryColor
-                                  : Colors.transparent,
+                              color:
+                                  isSelected
+                                      ? AppColors.primaryColor
+                                      : Colors.transparent,
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: isSelected
-                                    ? AppColors.primaryColor
-                                    : AppColors.borderColor,
+                                color:
+                                    isSelected
+                                        ? AppColors.primaryColor
+                                        : AppColors.borderColor,
                                 width: 2,
                               ),
                             ),
                             child: Icon(
-                              isSelected ? Icons.check : Icons.radio_button_unchecked,
-                              color: isSelected
-                                  ? Colors.white
-                                  : AppColors.textMuted,
+                              isSelected
+                                  ? Icons.check
+                                  : Icons.radio_button_unchecked,
+                              color:
+                                  isSelected
+                                      ? Colors.white
+                                      : AppColors.textMuted,
                               size: 20,
                             ),
                           ),
@@ -1898,11 +2126,7 @@ class _BookServicePageState extends State<BookServicePage> {
           padding: const EdgeInsets.all(48),
           child: Column(
             children: [
-              Icon(
-                Icons.error_outline,
-                size: 64,
-                color: AppColors.errorColor,
-              ),
+              Icon(Icons.error_outline, size: 64, color: AppColors.errorColor),
               const SizedBox(height: 16),
               Text(
                 'No Vehicle Selected',
@@ -1915,10 +2139,7 @@ class _BookServicePageState extends State<BookServicePage> {
               const SizedBox(height: 8),
               Text(
                 'Please go back and select a vehicle first',
-                style: TextStyle(
-                  color: AppColors.textSecondary,
-                  fontSize: 16,
-                ),
+                style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -1941,7 +2162,7 @@ class _BookServicePageState extends State<BookServicePage> {
           ),
           const SizedBox(height: 8),
           Text(
-              'Services available for your ${selectedVehicle!['make']} ${selectedVehicle!['model']} at ${widget.serviceCenter.name}',
+            'Services available for your ${selectedVehicle!['make']} ${selectedVehicle!['model']} at ${widget.serviceCenter.name}',
             style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
           ),
           const SizedBox(height: 24),
@@ -2041,11 +2262,6 @@ class _BookServicePageState extends State<BookServicePage> {
             const SizedBox(height: 24),
             _buildPriceSummary(),
           ],
-
-          const SizedBox(height: 24),
-          _buildPrioritySelection(),
-          const SizedBox(height: 24),
-          _buildNotesSection(),
         ],
       ),
     );
@@ -2123,12 +2339,12 @@ class _BookServicePageState extends State<BookServicePage> {
   }
 
   Future<void> _groupServicesByCategory(
-      List<ServiceCenterServiceOffer> services,
-      ) async {
+    List<ServiceCenterServiceOffer> services,
+  ) async {
     try {
       Map<String, List<ServiceCenterServiceOffer>> categoryGroups = {};
 
-      // Preload all category names for better performance
+      // Preload all category names
       await _preloadCategoryNames();
 
       for (var service in services) {
@@ -2137,27 +2353,32 @@ class _BookServicePageState extends State<BookServicePage> {
         // First try to get category from service document
         if (service.serviceId.isNotEmpty) {
           try {
-            final serviceDoc = await FirebaseFirestore.instance
-                .collection('services')
-                .doc(service.serviceId)
-                .get();
+            final serviceDoc =
+                await FirebaseFirestore.instance
+                    .collection('services')
+                    .doc(service.serviceId)
+                    .get();
 
             if (serviceDoc.exists) {
               final serviceData = serviceDoc.data()!;
               final categoryId = serviceData['categoryId'] as String?;
 
               if (categoryId != null && categoryId.isNotEmpty) {
-                categoryName = _categoryNameCache[categoryId] ?? 'Other Services';
+                categoryName =
+                    _categoryNameCache[categoryId] ?? 'Other Services';
               }
             }
           } catch (e) {
-            debugPrint('Error loading service category for ${service.serviceId}: $e');
+            debugPrint(
+              'Error loading service category for ${service.serviceId}: $e',
+            );
           }
         }
 
         // If still no category found, try direct categoryId from offer
         if (categoryName == 'Other Services' && service.categoryId.isNotEmpty) {
-          categoryName = _categoryNameCache[service.categoryId] ?? 'Other Services';
+          categoryName =
+              _categoryNameCache[service.categoryId] ?? 'Other Services';
         }
 
         if (!categoryGroups.containsKey(categoryName)) {
@@ -2178,28 +2399,6 @@ class _BookServicePageState extends State<BookServicePage> {
     }
   }
 
-  // Future<void> _preloadCategoryNames() async {
-  //   if (_categoryNameCache.isNotEmpty) return; // Already loaded
-  //
-  //   try {
-  //     final categoriesQuery = await FirebaseFirestore.instance
-  //         .collection('services_categories')
-  //         .where('active', isEqualTo: true)
-  //         .where('status', isEqualTo: 'approved')
-  //         .get();
-  //
-  //     for (var categoryDoc in categoriesQuery.docs) {
-  //       final categoryData = categoryDoc.data();
-  //       final categoryName = categoryData['name']?.toString() ?? 'Unknown Category';
-  //       _categoryNameCache[categoryDoc.id] = categoryName;
-  //     }
-  //
-  //     debugPrint('Preloaded ${_categoryNameCache.length} category names');
-  //   } catch (e) {
-  //     debugPrint('Error preloading category names: $e');
-  //   }
-  // }
-  //
   Widget _buildServicePackages() {
     if (availablePackages.isEmpty) {
       return _buildEmptyPackagesState();
@@ -2366,7 +2565,7 @@ class _BookServicePageState extends State<BookServicePage> {
     double labourPriceMax =
         effectivePricing?['labourPriceMax'] ?? service.labourPriceMax;
 
-    // Check pricing types (same logic as SearchServicesPage)
+    // Check pricing types
     bool hasAnyFixedPricing = partPrice > 0 || labourPrice > 0;
     bool hasAnyRangePricing =
         partPriceMin > 0 ||
@@ -2644,15 +2843,15 @@ class _BookServicePageState extends State<BookServicePage> {
                                 vertical: 4,
                               ),
                               decoration: BoxDecoration(
-                                color: AppColors.primaryColor.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
+                                color: Colors.blue.shade50,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.blue.shade100),
                               ),
                               child: Text(
-                                service.serviceName,
+                               service.serviceName,
                                 style: TextStyle(
-                                  color: AppColors.primaryColor,
+                                  color: Colors.blue.shade700,
                                   fontSize: 12,
-                                  fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ),
@@ -2903,6 +3102,14 @@ class _BookServicePageState extends State<BookServicePage> {
   }
 
   Widget _buildPriceSummary() {
+    bool hasRangePricing = _hasRangePricing();
+    double subtotal = _calculateSubtotal();
+    double sst = _calculateSST();
+    double finalTotal = _calculateFinalTotal();
+    String subtotalRange = _calculateSubtotalRange();
+    String sstRange = _calculateSSTRange(subtotalRange);
+    String finalTotalRange = _calculateFinalTotalRange(subtotalRange);
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -2913,98 +3120,119 @@ class _BookServicePageState extends State<BookServicePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Price Summary',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: AppColors.textPrimary,
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              'Price Summary',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
             ),
           ),
-          const SizedBox(height: 16),
 
-          // Show fixed price if available
-          if (totalFixedPrice > 0)
-            Column(
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Base Price',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    Text(
-                      'RM${totalFixedPrice.toStringAsFixed(2)}',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
-                        color: AppColors.successColor,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-              ],
-            ),
-
-          // Show range price if available
-          if (totalRangePrice.isNotEmpty)
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  totalFixedPrice > 0 ? 'Est Additional' : 'Est Total',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-                Text(
-                  totalRangePrice,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.warningColor,
-                  ),
-                ),
-              ],
-            ),
-
-          // Show final total range when both fixed and range exist
-          if (totalFixedPrice > 0 && totalRangePrice.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Divider(color: AppColors.borderColor),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Est Final Total',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                Text(
-                  _calculateFinalTotalRange(),
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.primaryColor,
-                  ),
-                ),
-              ],
-            ),
+          // Selected Services/Packages List
+          if (selectionType == 'individual' && selectedServices.isNotEmpty) ...[
+            ...selectedServices
+                .map((service) => _buildSelectedServiceItem(service))
+                .toList(),
+          ] else if (selectionType == 'package' && selectedPackage != null) ...[
+            _buildSelectedPackageItem(),
           ],
 
           const SizedBox(height: 16),
           Divider(color: AppColors.borderColor),
+          const SizedBox(height: 8),
+
+          // Subtotal range if any service has range pricing, otherwise fixed
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Subtotal',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              Text(
+                hasRangePricing
+                    ? subtotalRange
+                    : 'RM${subtotal.toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color:
+                      hasRangePricing
+                          ? AppColors.warningColor
+                          : AppColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // SST range if any service has range pricing
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'SST (8%)',
+                style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
+              ),
+              Text(
+                hasRangePricing ? sstRange : 'RM${sst.toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontSize: 14,
+                  color:
+                      hasRangePricing
+                          ? AppColors.warningColor
+                          : AppColors.textSecondary,
+                ),
+              ),
+            ],
+          ),
+
           const SizedBox(height: 12),
+          Divider(color: AppColors.borderColor),
+          const SizedBox(height: 8),
+
+          // Final Total - range if any service has range pricing
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Est. Final Total',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryColor,
+                ),
+              ),
+              Text(
+                hasRangePricing
+                    ? finalTotalRange
+                    : 'RM${finalTotal.toStringAsFixed(2)}',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color:
+                      hasRangePricing
+                          ? AppColors.warningColor
+                          : AppColors.primaryColor,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 16),
+          Divider(color: AppColors.borderColor),
+          const SizedBox(height: 12),
+
+          // Summary Info
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -3050,26 +3278,511 @@ class _BookServicePageState extends State<BookServicePage> {
     );
   }
 
-  // Helper method to calculate final total range
-  String _calculateFinalTotalRange() {
-    if (totalFixedPrice > 0 && totalRangePrice.isNotEmpty) {
-      // Extract min and max from range string
-      final rangeParts = totalRangePrice.replaceAll('RM', '').split(' - ');
-      if (rangeParts.length == 2) {
-        try {
-          double min = double.parse(rangeParts[0]);
-          double max = double.parse(rangeParts[1]);
-          double finalMin = totalFixedPrice + min;
-          double finalMax = totalFixedPrice + max;
-          return 'RM${finalMin.toStringAsFixed(2)} - RM${finalMax.toStringAsFixed(2)}';
-        } catch (e) {
-          return 'RM${totalFixedPrice.toStringAsFixed(2)} + ${totalRangePrice}';
+  // Build individual selected service item
+  Widget _buildSelectedServiceItem(ServiceCenterServiceOffer service) {
+    final pricing = effectivePricing[service.id] ?? {};
+
+    double partPrice = pricing['price'] ?? service.partPrice;
+    double labourPrice = pricing['labourPrice'] ?? service.labourPrice;
+    double partPriceMin = pricing['priceMin'] ?? service.partPriceMin;
+    double partPriceMax = pricing['priceMax'] ?? service.partPriceMax;
+    double labourPriceMin = pricing['labourPriceMin'] ?? service.labourPriceMin;
+    double labourPriceMax = pricing['labourPriceMax'] ?? service.labourPriceMax;
+
+    bool hasFixedPricing = partPrice > 0 || labourPrice > 0;
+    bool hasRangePricing =
+        partPriceMin > 0 ||
+        partPriceMax > 0 ||
+        labourPriceMin > 0 ||
+        labourPriceMax > 0;
+
+    double fixedTotal = partPrice + labourPrice;
+    double minTotal = partPriceMin + labourPriceMin;
+    double maxTotal = partPriceMax + labourPriceMax;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Service Name
+          Text(
+            service.serviceName ?? service.serviceDescription,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Pricing Details
+          if (hasFixedPricing && hasRangePricing && maxTotal > 0) ...[
+            if (labourPrice > 0)
+              _buildPriceRow(
+                'Labour',
+                'RM${labourPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (partPrice > 0)
+              _buildPriceRow(
+                'Parts',
+                'RM${partPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (labourPriceMin > 0 && labourPriceMax > labourPriceMin)
+              _buildPriceRow(
+                'Labour (Est.)',
+                'RM${labourPriceMin.toStringAsFixed(2)} - RM${labourPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (partPriceMin > 0 && partPriceMax > partPriceMin)
+              _buildPriceRow(
+                'Parts (Est.)',
+                'RM${partPriceMin.toStringAsFixed(2)} - RM${partPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if ((fixedTotal + minTotal) > 0)
+              _buildPriceRow(
+                'Est. Service Total',
+                'RM${(fixedTotal + minTotal).toStringAsFixed(2)} - RM${(fixedTotal + maxTotal).toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+          ] else if (hasFixedPricing && !hasRangePricing) ...[
+            if (labourPrice > 0)
+              _buildPriceRow(
+                'Labour',
+                'RM${labourPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (partPrice > 0)
+              _buildPriceRow(
+                'Parts',
+                'RM${partPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (fixedTotal > 0)
+              _buildPriceRow(
+                'Service Total',
+                'RM${fixedTotal.toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+            if (fixedTotal == 0)
+              _buildPriceRow('Service Total', 'RM0.00', AppColors.textMuted),
+          ] else if (hasRangePricing && (minTotal > 0 || maxTotal > 0)) ...[
+            if (labourPriceMin > 0 && labourPriceMax > labourPriceMin)
+              _buildPriceRow(
+                'Labour (Est.)',
+                'RM${labourPriceMin.toStringAsFixed(2)} - RM${labourPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (partPriceMin > 0 && partPriceMax > partPriceMin)
+              _buildPriceRow(
+                'Parts (Est.)',
+                'RM${partPriceMin.toStringAsFixed(2)} - RM${partPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (minTotal > 0 && maxTotal > minTotal)
+              _buildPriceRow(
+                'Est. Service Total',
+                'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+            if (minTotal == 0 && maxTotal == 0)
+              _buildPriceRow('Service Total', 'RM0.00', AppColors.textMuted),
+          ] else ...[
+            _buildPriceRow('Service Total', 'RM0.00', AppColors.textMuted),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSelectedPackageItem() {
+    final pricing = packagePricing[selectedPackage!.id] ?? {};
+
+    double partPrice = pricing['partPrice'] ?? 0.0;
+    double labourPrice = pricing['labourPrice'] ?? 0.0;
+    double partPriceMin = pricing['partPriceMin'] ?? 0.0;
+    double partPriceMax = pricing['partPriceMax'] ?? 0.0;
+    double labourPriceMin = pricing['labourPriceMin'] ?? 0.0;
+    double labourPriceMax = pricing['labourPriceMax'] ?? 0.0;
+
+    bool hasFixedPricing = partPrice > 0 || labourPrice > 0;
+    bool hasRangePricing =
+        partPriceMin > 0 ||
+        partPriceMax > 0 ||
+        labourPriceMin > 0 ||
+        labourPriceMax > 0;
+
+    double fixedTotal = partPrice + labourPrice;
+    double minTotal = partPriceMin + labourPriceMin;
+    double maxTotal = partPriceMax + labourPriceMax;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Package Name
+          Text(
+            selectedPackage!.name,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Package Services Count
+          Text(
+            'Includes ${selectedPackage!.services.length} services',
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 8),
+
+          // Pricing Details
+          if (hasFixedPricing && hasRangePricing && maxTotal > 0) ...[
+            if (labourPrice > 0)
+              _buildPriceRow(
+                'Labour',
+                'RM${labourPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (partPrice > 0)
+              _buildPriceRow(
+                'Parts',
+                'RM${partPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (labourPriceMin > 0 && labourPriceMax > labourPriceMin)
+              _buildPriceRow(
+                'Labour (Est.)',
+                'RM${labourPriceMin.toStringAsFixed(2)} - RM${labourPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (partPriceMin > 0 && partPriceMax > partPriceMin)
+              _buildPriceRow(
+                'Parts (Est.)',
+                'RM${partPriceMin.toStringAsFixed(2)} - RM${partPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if ((fixedTotal + minTotal) > 0)
+              _buildPriceRow(
+                'Est. Package Total',
+                'RM${(fixedTotal + minTotal).toStringAsFixed(2)} - RM${(fixedTotal + maxTotal).toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+          ] else if (hasFixedPricing && !hasRangePricing) ...[
+            if (labourPrice > 0)
+              _buildPriceRow(
+                'Labour',
+                'RM${labourPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (partPrice > 0)
+              _buildPriceRow(
+                'Parts',
+                'RM${partPrice.toStringAsFixed(2)}',
+                AppColors.successColor,
+              ),
+            if (fixedTotal > 0)
+              _buildPriceRow(
+                'Package Total',
+                'RM${fixedTotal.toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+            if (fixedTotal == 0)
+              _buildPriceRow('Package Total', 'RM0.00', AppColors.textMuted),
+          ] else if (hasRangePricing && (minTotal > 0 || maxTotal > 0)) ...[
+            if (labourPriceMin > 0 && labourPriceMax > labourPriceMin)
+              _buildPriceRow(
+                'Labour (Est.)',
+                'RM${labourPriceMin.toStringAsFixed(2)} - RM${labourPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (partPriceMin > 0 && partPriceMax > partPriceMin)
+              _buildPriceRow(
+                'Parts (Est.)',
+                'RM${partPriceMin.toStringAsFixed(2)} - RM${partPriceMax.toStringAsFixed(2)}',
+                AppColors.warningColor,
+              ),
+            if (minTotal > 0 && maxTotal > minTotal)
+              _buildPriceRow(
+                'Est. Package Total',
+                'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}',
+                AppColors.primaryColor,
+              ),
+            if (minTotal == 0 && maxTotal == 0)
+              _buildPriceRow('Package Total', 'RM0.00', AppColors.textMuted),
+          ] else ...[
+            _buildPriceRow('Package Total', 'RM0.00', AppColors.textMuted),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPriceRow(String label, String value, Color color,
+      {bool isBold = false, bool isLarge = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: isLarge ? 14 : 12,
+            fontWeight: isBold ? FontWeight.w500 : FontWeight.normal,
+            color: isLarge ? AppColors.textPrimary : AppColors.textSecondary,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: isLarge ? 14 : 12,
+            fontWeight: isBold ? FontWeight.w500 : FontWeight.normal,
+            color: color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  double _calculateSubtotal() {
+    double subtotal = 0.0;
+
+    if (selectionType == 'package' && selectedPackage != null) {
+      final pricing = packagePricing[selectedPackage!.id] ?? {};
+      subtotal = _calculatePackageSubtotal(pricing);
+    } else if (selectionType == 'individual' && selectedServices.isNotEmpty) {
+      for (final service in selectedServices) {
+        final pricing = effectivePricing[service.id] ?? {};
+        subtotal += _calculateServiceSubtotal(pricing, service);
+      }
+    }
+
+    return subtotal;
+  }
+
+  double _calculatePackageSubtotal(Map<String, dynamic> pricing) {
+    double labour = pricing['labourPrice'] ?? 0.0;
+    double parts = pricing['partPrice'] ?? 0.0;
+    double labourMin = pricing['labourPriceMin'] ?? 0.0;
+    double labourMax = pricing['labourPriceMax'] ?? 0.0;
+    double partsMin = pricing['partPriceMin'] ?? 0.0;
+    double partsMax = pricing['partPriceMax'] ?? 0.0;
+
+    bool hasFixedLabour = labour > 0;
+    bool hasFixedParts = parts > 0;
+    bool hasRangeLabour = labourMin > 0 && labourMax > 0;
+    bool hasRangeParts = partsMin > 0 && partsMax > 0;
+
+    // Calculate base subtotal using fixed prices when available, otherwise use range min
+    double baseLabour = hasFixedLabour ? labour : labourMin;
+    double baseParts = hasFixedParts ? parts : partsMin;
+
+    return baseLabour + baseParts;
+  }
+
+  double _calculateServiceSubtotal(
+    Map<String, dynamic> pricing,
+    ServiceCenterServiceOffer service,
+  ) {
+    double labour = pricing['labourPrice'] ?? service.labourPrice;
+    double parts = pricing['price'] ?? service.partPrice;
+    double labourMin = pricing['labourPriceMin'] ?? service.labourPriceMin;
+    double labourMax = pricing['labourPriceMax'] ?? service.labourPriceMax;
+    double partsMin = pricing['priceMin'] ?? service.partPriceMin;
+    double partsMax = pricing['priceMax'] ?? service.partPriceMax;
+
+    bool hasFixedLabour = labour > 0;
+    bool hasFixedParts = parts > 0;
+    bool hasRangeLabour = labourMin > 0 && labourMax > 0;
+    bool hasRangeParts = partsMin > 0 && partsMax > 0;
+
+    // Calculate base subtotal using fixed prices when available, otherwise use range min
+    double baseLabour = hasFixedLabour ? labour : labourMin;
+    double baseParts = hasFixedParts ? parts : partsMin;
+
+    return baseLabour + baseParts;
+  }
+
+  // Check if any service/package has range pricing
+  bool _hasRangePricing() {
+    if (selectionType == 'package' && selectedPackage != null) {
+      final pricing = packagePricing[selectedPackage!.id] ?? {};
+      return _packageHasRangePricing(pricing);
+    } else if (selectionType == 'individual' && selectedServices.isNotEmpty) {
+      for (final service in selectedServices) {
+        final pricing = effectivePricing[service.id] ?? {};
+        if (_serviceHasRangePricing(pricing, service)) {
+          return true;
         }
       }
     }
-    return totalRangePrice.isNotEmpty
-        ? totalRangePrice
-        : 'RM${totalFixedPrice.toStringAsFixed(2)}';
+    return false;
+  }
+
+  bool _packageHasRangePricing(Map<String, dynamic> pricing) {
+    double labourMin = pricing['labourPriceMin'] ?? 0.0;
+    double labourMax = pricing['labourPriceMax'] ?? 0.0;
+    double partsMin = pricing['partPriceMin'] ?? 0.0;
+    double partsMax = pricing['partPriceMax'] ?? 0.0;
+
+    return (labourMin > 0 && labourMax > labourMin) ||
+        (partsMin > 0 && partsMax > partsMin);
+  }
+
+  bool _serviceHasRangePricing(
+    Map<String, dynamic> pricing,
+    ServiceCenterServiceOffer service,
+  ) {
+    double labourMin = pricing['labourPriceMin'] ?? service.labourPriceMin;
+    double labourMax = pricing['labourPriceMax'] ?? service.labourPriceMax;
+    double partsMin = pricing['priceMin'] ?? service.partPriceMin;
+    double partsMax = pricing['priceMax'] ?? service.partPriceMax;
+
+    return (labourMin > 0 && labourMax > labourMin) ||
+        (partsMin > 0 && partsMax > partsMin);
+  }
+
+  // Calculate subtotal range
+  String _calculateSubtotalRange() {
+    if (selectionType == 'package' && selectedPackage != null) {
+      final pricing = packagePricing[selectedPackage!.id] ?? {};
+      return _calculatePackageSubtotalRange(pricing);
+    } else if (selectionType == 'individual' && selectedServices.isNotEmpty) {
+      return _calculateIndividualServicesSubtotalRange();
+    }
+    return '';
+  }
+
+  String _calculatePackageSubtotalRange(Map<String, dynamic> pricing) {
+    double labour = pricing['labourPrice'] ?? 0.0;
+    double parts = pricing['partPrice'] ?? 0.0;
+    double labourMin = pricing['labourPriceMin'] ?? 0.0;
+    double labourMax = pricing['labourPriceMax'] ?? 0.0;
+    double partsMin = pricing['partPriceMin'] ?? 0.0;
+    double partsMax = pricing['partPriceMax'] ?? 0.0;
+
+    bool hasFixedLabour = labour > 0;
+    bool hasFixedParts = parts > 0;
+    bool hasRangeLabour = labourMin > 0 && labourMax > labourMin;
+    bool hasRangeParts = partsMin > 0 && partsMax > partsMin;
+
+    double minTotal =
+        (hasFixedLabour ? labour : labourMin) +
+        (hasFixedParts ? parts : partsMin);
+    double maxTotal =
+        (hasFixedLabour ? labour : labourMax) +
+        (hasFixedParts ? parts : partsMax);
+
+    // If there's any range pricing, return the full range
+    if (hasRangeLabour || hasRangeParts) {
+      return 'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}';
+    }
+
+    return '';
+  }
+
+  String _calculateIndividualServicesSubtotalRange() {
+    double totalMin = 0.0;
+    double totalMax = 0.0;
+    bool hasAnyRange = false;
+
+    for (final service in selectedServices) {
+      final pricing = effectivePricing[service.id] ?? {};
+
+      double labour = pricing['labourPrice'] ?? service.labourPrice;
+      double parts = pricing['price'] ?? service.partPrice;
+      double labourMin = pricing['labourPriceMin'] ?? service.labourPriceMin;
+      double labourMax = pricing['labourPriceMax'] ?? service.labourPriceMax;
+      double partsMin = pricing['priceMin'] ?? service.partPriceMin;
+      double partsMax = pricing['priceMax'] ?? service.partPriceMax;
+
+      bool hasFixedLabour = labour > 0;
+      bool hasFixedParts = parts > 0;
+      bool hasRangeLabour = labourMin > 0 && labourMax > labourMin;
+      bool hasRangeParts = partsMin > 0 && partsMax > partsMin;
+
+      // Track if any service has range pricing
+      if (hasRangeLabour || hasRangeParts) {
+        hasAnyRange = true;
+      }
+
+      totalMin +=
+          (hasFixedLabour ? labour : labourMin) +
+          (hasFixedParts ? parts : partsMin);
+      totalMax +=
+          (hasFixedLabour ? labour : labourMax) +
+          (hasFixedParts ? parts : partsMax);
+    }
+
+    if (hasAnyRange && totalMax > totalMin) {
+      return 'RM${totalMin.toStringAsFixed(2)} - RM${totalMax.toStringAsFixed(2)}';
+    }
+
+    return '';
+  }
+
+  String _calculateSSTRange(String subtotalRange) {
+    if (subtotalRange.isEmpty) return '';
+
+    double minSubtotal = _extractRangeMin(subtotalRange);
+    double maxSubtotal = _extractRangeMax(subtotalRange);
+
+    double minSST = minSubtotal * 0.08;
+    double maxSST = maxSubtotal * 0.08;
+
+    return 'RM${minSST.toStringAsFixed(2)} - RM${maxSST.toStringAsFixed(2)}';
+  }
+
+  String _calculateFinalTotalRange(String subtotalRange) {
+    if (subtotalRange.isEmpty) return '';
+
+    double minSubtotal = _extractRangeMin(subtotalRange);
+    double maxSubtotal = _extractRangeMax(subtotalRange);
+
+    double minSST = minSubtotal * 0.08;
+    double maxSST = maxSubtotal * 0.08;
+
+    double minTotal = minSubtotal + minSST;
+    double maxTotal = maxSubtotal + maxSST;
+
+    return 'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}';
+  }
+
+  double _extractRangeMin(String range) {
+    try {
+      final parts = range.split(' - ');
+      if (parts.length == 2) {
+        return double.parse(parts[0].replaceAll('RM', ''));
+      }
+    } catch (e) {
+      debugPrint('Error parsing range min: $e');
+    }
+    return 0.0;
+  }
+
+  double _extractRangeMax(String range) {
+    try {
+      final parts = range.split(' - ');
+      if (parts.length == 2) {
+        return double.parse(parts[1].replaceAll('RM', ''));
+      }
+    } catch (e) {
+      debugPrint('Error parsing range max: $e');
+    }
+    return 0.0;
+  }
+
+  double _calculateSST() {
+    return _calculateSubtotal() * 0.08;
+  }
+
+  double _calculateFinalTotal() {
+    return _calculateSubtotal() + _calculateSST();
   }
 
   Widget _buildPrioritySelection() {
@@ -3332,15 +4045,15 @@ class _BookServicePageState extends State<BookServicePage> {
                         Text(
                           selectedDate != null
                               ? DateFormat(
-                            'EEEE, dd MMM yyyy',
-                          ).format(selectedDate!)
+                                'EEEE, dd MMM yyyy',
+                              ).format(selectedDate!)
                               : 'Choose Date',
                           style: TextStyle(
                             fontSize: 16,
                             color:
-                            selectedDate != null
-                                ? AppColors.textPrimary
-                                : AppColors.textMuted,
+                                selectedDate != null
+                                    ? AppColors.textPrimary
+                                    : AppColors.textMuted,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -3421,7 +4134,7 @@ class _BookServicePageState extends State<BookServicePage> {
                         const SizedBox(width: 12),
                         Text(
                           selectedDate != null &&
-                              _isMultiDayService(selectedDate!)
+                                  _isMultiDayService(selectedDate!)
                               ? 'Finding available time slots...'
                               : 'Finding available time slots...',
                           style: TextStyle(
@@ -3454,144 +4167,144 @@ class _BookServicePageState extends State<BookServicePage> {
                     ),
                   )
                 else if (availableTimeSlots.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: AppColors.errorColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: AppColors.errorColor.withOpacity(0.3),
-                        ),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: AppColors.errorColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.errorColor.withOpacity(0.3),
                       ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.schedule_outlined,
-                            color: AppColors.errorColor,
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              selectedDate != null &&
-                                  _isMultiDayService(selectedDate!)
-                                  ? 'No consecutive days available starting from this date. Please choose another start date.'
-                                  : 'No available time slots for the selected date. Please choose another date.',
-                              style: TextStyle(
-                                color: AppColors.errorColor,
-                                fontSize: 14,
-                              ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.schedule_outlined,
+                          color: AppColors.errorColor,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            selectedDate != null &&
+                                    _isMultiDayService(selectedDate!)
+                                ? 'No consecutive days available starting from this date. Please choose another start date.'
+                                : 'No available time slots for the selected date. Please choose another date.',
+                            style: TextStyle(
+                              color: AppColors.errorColor,
+                              fontSize: 14,
                             ),
                           ),
-                        ],
-                      ),
-                    )
-                  else
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Available Time Slots (${availableTimeSlots.length} slots)',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: AppColors.textSecondary,
-                            fontWeight: FontWeight.w500,
-                          ),
                         ),
-                        const SizedBox(height: 16),
-                        GridView.builder(
-                          shrinkWrap: true,
-                          physics: const NeverScrollableScrollPhysics(),
-                          gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            crossAxisSpacing: 12,
-                            mainAxisSpacing: 12,
-                            childAspectRatio: 2.5,
-                          ),
-                          itemCount: availableTimeSlots.length,
-                          itemBuilder: (context, index) {
-                            final slot = availableTimeSlots[index];
-                            final isSelected =
-                                selectedTime?.hour == slot.hour &&
-                                    selectedTime?.minute == slot.minute;
+                      ],
+                    ),
+                  )
+                else
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Available Time Slots (${availableTimeSlots.length} slots)',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: AppColors.textSecondary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              crossAxisSpacing: 12,
+                              mainAxisSpacing: 12,
+                              childAspectRatio: 2.5,
+                            ),
+                        itemCount: availableTimeSlots.length,
+                        itemBuilder: (context, index) {
+                          final slot = availableTimeSlots[index];
+                          final isSelected =
+                              selectedTime?.hour == slot.hour &&
+                              selectedTime?.minute == slot.minute;
 
-                            return InkWell(
-                              onTap: () {
-                                setState(() {
-                                  selectedTime = slot;
-                                });
-                              },
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color:
-                                  isSelected
-                                      ? AppColors.primaryColor
-                                      : AppColors.surfaceColor,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color:
+                          return InkWell(
+                            onTap: () {
+                              setState(() {
+                                selectedTime = slot;
+                              });
+                            },
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color:
                                     isSelected
                                         ? AppColors.primaryColor
-                                        : AppColors.borderColor,
+                                        : AppColors.surfaceColor,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color:
+                                      isSelected
+                                          ? AppColors.primaryColor
+                                          : AppColors.borderColor,
+                                ),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  slot.format(context),
+                                  style: TextStyle(
+                                    color:
+                                        isSelected
+                                            ? Colors.white
+                                            : AppColors.textPrimary,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                child: Center(
-                                  child: Text(
-                                    slot.format(context),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      if (selectedTime != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: AppColors.successColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: AppColors.successColor.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_outline,
+                                    color: AppColors.successColor,
+                                    size: 16,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Selected Time Slot',
                                     style: TextStyle(
-                                      color:
-                                      isSelected
-                                          ? Colors.white
-                                          : AppColors.textPrimary,
+                                      color: AppColors.successColor,
                                       fontSize: 14,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                ),
+                                ],
                               ),
-                            );
-                          },
-                        ),
-                        if (selectedTime != null) ...[
-                          const SizedBox(height: 16),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: AppColors.successColor.withOpacity(0.1),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: AppColors.successColor.withOpacity(0.3),
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Icon(
-                                      Icons.check_circle_outline,
-                                      color: AppColors.successColor,
-                                      size: 16,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      'Selected Time Slot',
-                                      style: TextStyle(
-                                        color: AppColors.successColor,
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                _buildServiceSchedulePreview(),
-                              ],
-                            ),
+                              const SizedBox(height: 8),
+                              _buildServiceSchedulePreview(),
+                            ],
                           ),
-                        ],
+                        ),
                       ],
-                    ),
+                    ],
+                  ),
               ],
             ),
           ),
@@ -3668,8 +4381,7 @@ class _BookServicePageState extends State<BookServicePage> {
     int dayCount = 1;
 
     while (remainingDuration > 0 && dayCount <= 7) {
-      // Limit to 7 days for safety
-      // Get operating hours for current day
+      // Limit to 7 days for safety and get operating hours for current day
       final dayNames = [
         'Monday',
         'Tuesday',
@@ -3681,7 +4393,7 @@ class _BookServicePageState extends State<BookServicePage> {
       ];
       final dayName = dayNames[currentDate.weekday - 1];
       final dayHours = widget.serviceCenter.operatingHours.firstWhere(
-            (hours) => hours['day'] == dayName,
+        (hours) => hours['day'] == dayName,
         orElse: () => {},
       );
 
@@ -3700,14 +4412,14 @@ class _BookServicePageState extends State<BookServicePage> {
 
       // Calculate available minutes for this day
       int dayStartMinutes =
-      (dayCount == 1)
-          ? currentStartTime.hour * 60 + currentStartTime.minute
-          : openTime.hour * 60 + openTime.minute;
+          (dayCount == 1)
+              ? currentStartTime.hour * 60 + currentStartTime.minute
+              : openTime.hour * 60 + openTime.minute;
 
       int dayEndMinutes = closeTime.hour * 60 + closeTime.minute;
       int availableMinutesToday = dayEndMinutes - dayStartMinutes;
 
-      // Calculate how much time we can use today
+      // Calculate how much time can use today
       int minutesUsedToday = remainingDuration.clamp(0, availableMinutesToday);
 
       // Calculate end time for today
@@ -3722,8 +4434,8 @@ class _BookServicePageState extends State<BookServicePage> {
           padding: const EdgeInsets.only(bottom: 4),
           child: Text(
             'Day $dayCount (${DateFormat('EEE, MMM dd').format(currentDate)}): '
-                '${_formatTimeOfDay(currentStartTime)} - ${_formatTimeOfDay(endTimeToday)} '
-                '(${_formatDuration(minutesUsedToday)})',
+            '${_formatTimeOfDay(currentStartTime)} - ${_formatTimeOfDay(endTimeToday)} '
+            '(${_formatDuration(minutesUsedToday)})',
             style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
           ),
         ),
@@ -3763,7 +4475,6 @@ class _BookServicePageState extends State<BookServicePage> {
     );
   }
 
-  // Helper method to format TimeOfDay consistently
   String _formatTimeOfDay(TimeOfDay time) {
     final now = DateTime.now();
     final dateTime = DateTime(
@@ -3776,7 +4487,100 @@ class _BookServicePageState extends State<BookServicePage> {
     return DateFormat('h:mma').format(dateTime).toLowerCase();
   }
 
+  Widget _buildServiceImage(String imageStr, {double width = 60, double height = 60}) {
+    try {
+      if (imageStr.startsWith('data:image')) {
+        // Handle base64 image
+        final base64Str = imageStr.split(',').last;
+        final bytes = base64Decode(base64Str);
+        return Container(
+          width: width,
+          height: height,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.memory(
+              bytes,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) {
+                debugPrint("Base64 image error: $error");
+                return _buildDefaultImagePlaceholder(width, height);
+              },
+            ),
+          ),
+        );
+      } else {
+        // Handle network image
+        return Container(
+          width: width,
+          height: height,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.network(
+              imageStr,
+              fit: BoxFit.cover,
+              loadingBuilder: (context, child, loadingProgress) {
+                if (loadingProgress == null) return child;
+                return Container(
+                  width: width,
+                  height: height,
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.primaryColor,
+                        value: loadingProgress.expectedTotalBytes != null
+                            ? loadingProgress.cumulativeBytesLoaded / loadingProgress.expectedTotalBytes!
+                            : null,
+                      ),
+                    ),
+                  ),
+                );
+              },
+              errorBuilder: (context, error, stackTrace) {
+                debugPrint('Image loading error: $error');
+                return _buildDefaultImagePlaceholder(width, height);
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("Image build error: $e");
+      return _buildDefaultImagePlaceholder(width, height);
+    }
+  }
+
+  Widget _buildDefaultImagePlaceholder(double width, double height) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceColor,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        Icons.business_rounded,
+        size: 24,
+        color: AppColors.textMuted,
+      ),
+    );
+  }
+
   Widget _buildConfirmation() {
+    bool hasRangePricing = _hasRangePricing();
+    double subtotal = _calculateSubtotal();
+    double sst = _calculateSST();
+    double finalTotal = _calculateFinalTotal();
+    String subtotalRange = _calculateSubtotalRange();
+    String sstRange = _calculateSSTRange(subtotalRange);
+    String finalTotalRange = _calculateFinalTotalRange(subtotalRange);
+
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
       child: Column(
@@ -3806,89 +4610,90 @@ class _BookServicePageState extends State<BookServicePage> {
               border: Border.all(color: AppColors.borderColor),
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Service Center Image
+                Container(
+                  width: 300,
+                  height: 100,
+                  child: widget.serviceCenter.serviceCenterPhoto.isNotEmpty
+                      ? ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: _buildServiceImage(
+                      widget.serviceCenter.serviceCenterPhoto,
+                      width: 300,
+                      height: 100,
+                    ),
+                  )
+                      : Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceColor,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.business_rounded,
+                      size: 32,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 Text(
-                  'Service Center',
+                  widget.serviceCenter.name,
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: AppColors.textPrimary,
                   ),
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    if (widget.serviceCenter.images.isNotEmpty)
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.network(
-                          widget.serviceCenter.images.first,
-                          width: 60,
-                          height: 60,
-                          fit: BoxFit.cover,
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return Container(
-                              width: 60,
-                              height: 60,
-                              decoration: BoxDecoration(
-                                color: AppColors.surfaceColor,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Center(
-                                child: SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: AppColors.primaryColor,
-                                  ),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.location_on_rounded,
+                        size: 16,
+                        color: AppColors.textSecondary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (widget.serviceCenter.addressLine1.isNotEmpty)
+                              Text(
+                                widget.serviceCenter.addressLine1,
+                                style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 14,
                                 ),
                               ),
-                            );
-                          },
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              width: 60,
-                              height: 60,
-                              decoration: BoxDecoration(
-                                color: AppColors.surfaceColor,
-                                borderRadius: BorderRadius.circular(8),
+                            if (widget.serviceCenter.addressLine2?.isNotEmpty ?? false)
+                              Text(
+                                widget.serviceCenter.addressLine2!,
+                                style: TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 14,
+                                ),
                               ),
-                              child: Icon(
-                                Icons.home_repair_service,
-                                color: AppColors.textMuted,
+                            Text(
+                              '${widget.serviceCenter.postalCode} ${widget.serviceCenter.city}, ${widget.serviceCenter.state}',
+                              style: TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 14,
                               ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
                       ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.serviceCenter.name,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            widget.serviceCenter.city,
-                            style: TextStyle(
-                              color: AppColors.textSecondary,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -3907,7 +4712,7 @@ class _BookServicePageState extends State<BookServicePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Vehicle',
+                  'Selected Vehicle Info',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
@@ -3917,16 +4722,40 @@ class _BookServicePageState extends State<BookServicePage> {
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppColors.primaryColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        Icons.directions_car,
-                        color: AppColors.primaryColor,
-                        size: 24,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: (selectedVehicle?['make'] != null && selectedVehicle?['year'] != null)
+                          ? Image.network(
+                        'https://cdn.imagin.studio/getImage?customer=demo&make=${selectedVehicle?['make']}&modelFamily=${selectedVehicle?['model']}&modelYear=${selectedVehicle?['year']}&angle=01',
+                        height: 100,
+                        width: 120,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          height: 60,
+                          width: 60,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.directions_car,
+                            size: 30,
+                            color: Colors.white,
+                          ),
+                        ),
+                      )
+                          : Container(
+                        height: 60,
+                        width: 60,
+                        decoration: BoxDecoration(
+                          color: AppColors.cardColor.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.directions_car,
+                          size: 30,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -3935,7 +4764,7 @@ class _BookServicePageState extends State<BookServicePage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '${selectedVehicle?['make']} ${selectedVehicle?['model']}',
+                            '${selectedVehicle?['make']} ${selectedVehicle?['model']} (${selectedVehicle?['year']})',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
@@ -3944,7 +4773,15 @@ class _BookServicePageState extends State<BookServicePage> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            '${selectedVehicle?['year']} • ${selectedVehicle?['plateNumber']}',
+                            '• ${selectedVehicle?['plateNumber']}',
+                            style: TextStyle(
+                              color: AppColors.textSecondary,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '• ${selectedVehicle?['sizeClass'] ?? 'N/A'}',
                             style: TextStyle(
                               color: AppColors.textSecondary,
                               fontSize: 14,
@@ -3983,11 +4820,11 @@ class _BookServicePageState extends State<BookServicePage> {
                 ),
                 const SizedBox(height: 16),
 
-                if (selectionType == 'package' && selectedPackage != null) ...[
+                if (selectionType == 'package' && selectedPackage != null)
                   Container(
                     padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: AppColors.accentColor.withOpacity(0.1),
+                      color: AppColors.surfaceColor,
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Column(
@@ -4001,100 +4838,67 @@ class _BookServicePageState extends State<BookServicePage> {
                               size: 20,
                             ),
                             const SizedBox(width: 8),
-                            Text(
-                              selectedPackage!.name,
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: AppColors.textPrimary,
+                            Expanded(
+                              child: Text(
+                                selectedPackage!.name,
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textPrimary,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 2,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          selectedPackage!.description,
-                          style: TextStyle(
-                            color: AppColors.textSecondary,
-                            fontSize: 14,
-                          ),
-                        ),
                         const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children:
-                              selectedPackage!.services
-                                  .map(
-                                    (service) => Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: AppColors.primaryColor
-                                            .withOpacity(0.1),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        service.serviceName,
-                                        style: TextStyle(
-                                          color: AppColors.primaryColor,
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                    ),
-                                  )
-                                  .toList(),
-                        ),
+                        _buildServiceLabels(),
                       ],
                     ),
-                  ),
-                ] else ...[
-                  ...selectedServices
-                      .map(
-                        (service) => Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: AppColors.surfaceColor,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _getServiceIcon(service.serviceName ?? ''),
-                                color: _getServiceColor(
-                                  service.serviceName ?? '',
-                                ),
-                                size: 20,
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  service.serviceName ??
-                                      service.serviceDescription,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textPrimary,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                '${service.duration}min',
-                                style: TextStyle(
-                                  color: AppColors.textMuted,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
+                  )
+                else
+                  Column(
+                    children: selectedServices
+                        .map(
+                          (service) => Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceColor,
+                          borderRadius: BorderRadius.circular(8),
                         ),
-                      )
-                      .toList(),
-                ],
+                        child: Row(
+                          children: [
+                            Icon(
+                              _getServiceIcon(service.serviceName ?? ''),
+                              color: _getServiceColor(service.serviceName ?? ''),
+                              size: 20,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                service.serviceName ?? service.serviceDescription,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.textPrimary,
+                                ),
+                              ),
+                            ),
+                            Text(
+                              '${service.duration}min',
+                              style: TextStyle(
+                                color: AppColors.textMuted,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                        .toList(),
+                  ),
               ],
             ),
           ),
@@ -4120,78 +4924,35 @@ class _BookServicePageState extends State<BookServicePage> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Icon(Icons.calendar_today, color: AppColors.accentColor),
-                    const SizedBox(width: 12),
-                    Text(
-                      selectedDate != null
-                          ? DateFormat(
-                            'EEEE, MMM dd, yyyy',
-                          ).format(selectedDate!)
-                          : 'Date not selected',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
+                _buildScheduleDetailRow(
+                  Icons.calendar_today,
+                  selectedDate != null
+                      ? DateFormat('EEEE, MMM dd, yyyy').format(selectedDate!)
+                      : 'Date not selected',
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Icon(Icons.access_time, color: AppColors.accentColor),
-                    const SizedBox(width: 12),
-                    Text(
-                      selectedTime != null
-                          ? '${selectedTime!.format(context)} - ${TimeOfDay(hour: (selectedTime!.hour * 60 + selectedTime!.minute + totalEstimatedDuration) ~/ 60, minute: (selectedTime!.hour * 60 + selectedTime!.minute + totalEstimatedDuration) % 60).format(context)}'
-                          : 'Time not selected',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
+                if (selectedTime != null)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildServiceSchedulePreview(),
+                    ],
+                  )
+                else
+                  _buildScheduleDetailRow(
+                    Icons.access_time,
+                    'Time not selected',
+                  ),
+                const SizedBox(height: 12),
+                _buildScheduleDetailRow(
+                  Icons.timer_outlined,
+                  'Estimated Duration: ${totalEstimatedDuration}mins',
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Icon(Icons.timer_outlined, color: AppColors.accentColor),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Estimated Duration: ${totalEstimatedDuration}min',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Icon(
-                      urgencyLevel == 'urgent'
-                          ? Icons.priority_high
-                          : Icons.schedule,
-                      color:
-                          urgencyLevel == 'urgent'
-                              ? AppColors.errorColor
-                              : AppColors.successColor,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Priority: ${urgencyLevel.toUpperCase()}',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
+                _buildScheduleDetailRow(
+                  urgencyLevel == 'urgent' ? Icons.priority_high : Icons.schedule,
+                  'Priority: ${urgencyLevel.toUpperCase()}',
+                  color: urgencyLevel == 'urgent' ? AppColors.errorColor : AppColors.successColor,
                 ),
               ],
             ),
@@ -4202,51 +4963,111 @@ class _BookServicePageState extends State<BookServicePage> {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: AppColors.primaryColor.withOpacity(0.05),
+              color: AppColors.surfaceColor,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: AppColors.primaryColor.withOpacity(0.2),
-              ),
+              border: Border.all(color: AppColors.borderColor),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Total Cost',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    'Price Summary',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
                   ),
                 ),
+
+                // Selected Services/Packages List
+                if (selectionType == 'individual' && selectedServices.isNotEmpty)
+                  Column(
+                    children: selectedServices
+                        .map((service) => _buildSelectedServiceItem(service))
+                        .toList(),
+                  )
+                else if (selectionType == 'package' && selectedPackage != null)
+                  _buildSelectedPackageItem(),
+
                 const SizedBox(height: 16),
-                if (totalFixedPrice > 0)
-                  Text(
-                    'Fixed: RM${totalFixedPrice.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.successColor,
+                Divider(color: AppColors.borderColor),
+                const SizedBox(height: 8),
+
+                // Pricing rows
+                _buildPriceRow(
+                  'Subtotal',
+                  hasRangePricing ? subtotalRange : 'RM${subtotal.toStringAsFixed(2)}',
+                  hasRangePricing ? AppColors.warningColor : AppColors.textPrimary,
+                  isBold: true,
+                ),
+                const SizedBox(height: 8),
+                _buildPriceRow(
+                  'SST (8%)',
+                  hasRangePricing ? sstRange : 'RM${sst.toStringAsFixed(2)}',
+                  hasRangePricing ? AppColors.warningColor : AppColors.textSecondary,
+                ),
+                const SizedBox(height: 12),
+                Divider(color: AppColors.borderColor),
+                const SizedBox(height: 8),
+                _buildPriceRow(
+                  'Est. Final Total',
+                  hasRangePricing ? finalTotalRange : 'RM${finalTotal.toStringAsFixed(2)}',
+                  AppColors.primaryColor,
+                  isBold: true,
+                  isLarge: true,
+                ),
+
+                const SizedBox(height: 16),
+                Divider(color: AppColors.borderColor),
+                const SizedBox(height: 12),
+
+                // Summary Info
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      selectionType == 'package'
+                          ? 'Package: ${selectedPackage?.name ?? ''}'
+                          : 'Services: ${selectedServices.length} selected',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textMuted,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                if (totalRangePrice.isNotEmpty)
-                  Text(
-                    'Estimated: $totalRangePrice',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.warningColor,
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.accentColor.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.schedule,
+                            size: 14,
+                            color: AppColors.accentColor,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${totalEstimatedDuration}min',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.accentColor,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                if (totalFixedPrice == 0.0 && totalRangePrice.isEmpty)
-                  Text(
-                    'Price will be quoted upon inspection',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: AppColors.textSecondary,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -4287,6 +5108,25 @@ class _BookServicePageState extends State<BookServicePage> {
           ],
         ],
       ),
+    );
+  }
+
+  Widget _buildScheduleDetailRow(IconData icon, String text, {Color? color}) {
+    return Row(
+      children: [
+        Icon(icon, color: color ?? AppColors.accentColor),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 14,
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -4367,34 +5207,115 @@ class _BookServicePageState extends State<BookServicePage> {
     );
   }
 
-  Color _getServiceColor(String serviceName) {
-    final name = serviceName.toLowerCase();
-    if (name.contains('brake')) return AppColors.errorColor;
-    if (name.contains('engine')) return Colors.redAccent;
-    if (name.contains('oil')) return Colors.orangeAccent;
-    if (name.contains('tire') || name.contains('tyre'))
-      return Colors.blueAccent;
-    if (name.contains('battery')) return Colors.green;
-    if (name.contains('air conditioning') || name.contains('ac'))
-      return Colors.cyan;
-    if (name.contains('transmission')) return Colors.purple;
-    if (name.contains('suspension')) return Colors.indigo;
-    return AppColors.accentColor;
+  Widget _buildServiceLabels() {
+    final services = selectedPackage!.services;
+    final displayServices = _showAllServices ? services : services.take(3).toList();
+    final hasMoreServices = services.length > 3;
+    final remainingCount = services.length - 3;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header with count
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Services Included',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: AppColors.primaryColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${services.length}',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.primaryColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 12),
+
+        // Services Grid
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: displayServices.map((service) => Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.blue.shade100),
+            ),
+            child: Text(
+              service.serviceName,
+              style: TextStyle(
+                color: Colors.blue.shade700,
+                fontSize: 12,
+              ),
+            ),
+          )).toList(),
+        ),
+
+        if (hasMoreServices) ...[
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: () {
+              setState(() {
+                _showAllServices = !_showAllServices;
+              });
+            },
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.cardColor,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: AppColors.borderColor,
+                ),
+              ),
+              child: Center(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      _showAllServices ? 'Collapse Services' : 'View All Services',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.primaryColor,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    AnimatedRotation(
+                      duration: const Duration(milliseconds: 300),
+                      turns: _showAllServices ? 0.5 : 0,
+                      child: Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 16,
+                        color: AppColors.primaryColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 
-  IconData _getServiceIcon(String serviceName) {
-    final name = serviceName.toLowerCase();
-    if (name.contains('brake')) return Icons.disc_full;
-    if (name.contains('engine')) return Icons.build_circle;
-    if (name.contains('oil')) return Icons.local_gas_station;
-    if (name.contains('tire') || name.contains('tyre'))
-      return Icons.tire_repair;
-    if (name.contains('battery')) return Icons.battery_charging_full;
-    if (name.contains('air conditioning') || name.contains('ac'))
-      return Icons.ac_unit;
-    if (name.contains('transmission')) return Icons.settings;
-    if (name.contains('suspension')) return Icons.drive_eta;
-    if (name.contains('diagnostic')) return Icons.search;
-    return Icons.build;
-  }
 }

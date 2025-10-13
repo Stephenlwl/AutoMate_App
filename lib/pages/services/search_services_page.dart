@@ -79,6 +79,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
   // Tier and pricing data
   Map<String, Map<String, dynamic>> offerTiers = {};
   Map<String, Map<String, dynamic>> effectivePricing = {};
+  Map<String, Map<String, dynamic>> packagePricing = {};
 
   @override
   void initState() {
@@ -379,10 +380,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
       return;
     }
 
-    debugPrint(
-      'Switching to vehicle: ${vehicle['make']} ${vehicle['model']} ${vehicle['year']} (${vehicle['status']})',
-    );
-
     setState(() {
       carOwnerVehicleMake = vehicle['make'] ?? '';
       carOwnerVehicleModel = vehicle['model'] ?? '';
@@ -432,7 +429,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
       List<models.ServicePackage> allPackages = [];
       Map<String, Map<String, dynamic>> tiersMap = {};
 
-      // If we have a selected service center, load its tiers
+      // If have a selected service center, load its tiers
       if (selectedServiceCenterId != null) {
         final tiersQuery = await FirebaseFirestore.instance
             .collection('service_center_service_tiers')
@@ -520,7 +517,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         return false;
       }
 
-      // Get ONLY active service offers that belong to this package
+      // Get only active service offers that belong to this package
       Query packageOffersQuery = FirebaseFirestore.instance
           .collection('service_center_services_offer')
           .where('servicePackageId', isEqualTo: packageId)
@@ -546,7 +543,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
       String vehicleDisplacement = carOwnerVehicleDisplacement;
       String vehicleSizeClass = _normalize(carOwnerVehicleSizeClass);
 
-      // CRITICAL FIX: Load all required tiers for this package's offers
       Set<String> requiredTierIds = {};
       for (var offerDoc in packageOffersSnapshot.docs) {
         final offerData = offerDoc.data() as Map<String, dynamic>;
@@ -598,7 +594,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
 
           bool isOfferCompatible = false;
 
-          // FIXED: Check with tier if available - now using completeTiersMap
           if (offer.tierId != null &&
               offer.tierId!.isNotEmpty &&
               completeTiersMap.containsKey(offer.tierId)) {
@@ -686,13 +681,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
           .where('categoryId', isEqualTo: categoryId)
           .where('active', isEqualTo: true);
 
-      // if (selectedServiceCenterId != null) {
-      //   individualServicesQuery = individualServicesQuery.where(
-      //     'serviceCenterId',
-      //     isEqualTo: selectedServiceCenterId,
-      //   );
-      // }
-
       final querySnapshot = await individualServicesQuery.get();
 
       // Load tiers for pricing
@@ -727,7 +715,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
 
           final service = ServiceCenterServiceOffer.fromFirestore(doc.id, data);
 
-          // Apply same compatibility logic as packages
           bool isCompatible = _checkServiceCompatibility(service, tiersMap);
           if (isCompatible) {
             await _loadServiceName(service);
@@ -1213,10 +1200,9 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
     double minTotal = partPriceMin + labourPriceMin;
     double maxTotal = partPriceMax + labourPriceMax;
 
-    // Calculate total using the same logic as before
     double total;
     if (hasFixedPricing && hasRangePricing && maxTotal > 0) {
-      total = fixedTotal + maxTotal; // Conservative estimate for cart
+      total = fixedTotal + maxTotal;
     } else if (hasFixedPricing && !hasRangePricing) {
       total = fixedTotal;
     } else if (hasRangePricing && (minTotal > 0 || maxTotal > 0)) {
@@ -1262,7 +1248,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
     double minTotal = partPriceMin + labourPriceMin;
     double maxTotal = partPriceMax + labourPriceMax;
 
-    // Calculate total using consistent logic
     double total;
     if (hasFixedPricing && hasRangePricing && maxTotal > 0) {
       total = fixedTotal + maxTotal;
@@ -1527,37 +1512,59 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
   }
 
   void _proceedToAppointment() async {
-    final Map<String, dynamic> pricingDetails = await _calculateTotalPriceWithDetails();
+    for (var package in cartPackages) {
+      final pricing = await _calculatePackagePricing(package);
+      packagePricing[package.id] = pricing;
+    }
+
     int totalDuration = await _calculateTotalDuration();
 
     Map<String, int> packageDurations = {};
-    Map<String, Map<String, dynamic>> packagePricing = {};
+    Map<String, Map<String, dynamic>> packagePricingDetails = {};
+
     for (var package in cartPackages) {
-      final pricing = await _calculatePackagePricing(package);
+      final pricing = packagePricing[package.id] ?? {};
       int packageDuration = (pricing['duration'] ?? package.estimatedDuration).toInt();
       packageDurations[package.id] = packageDuration;
 
-      packagePricing[package.id] = {
-        'fixedPrice': pricing['totalPartPrice'] + pricing['totalLabourPrice'],
-        'minPrice': pricing['minPartPrice'] + pricing['minLabourPrice'],
-        'maxPrice': pricing['maxPartPrice'] + pricing['maxLabourPrice'],
+      packagePricingDetails[package.id] = {
+        'totalPartPrice': pricing['totalPartPrice'] ?? 0.0,
+        'totalLabourPrice': pricing['totalLabourPrice'] ?? 0.0,
+        'minPartPrice': pricing['minPartPrice'] ?? 0.0,
+        'maxPartPrice': pricing['maxPartPrice'] ?? 0.0,
+        'minLabourPrice': pricing['minLabourPrice'] ?? 0.0,
+        'maxLabourPrice': pricing['maxLabourPrice'] ?? 0.0,
+        'duration': packageDuration,
       };
     }
 
-    for (var service in cartItems) {
-      final effectivePricing = this.effectivePricing[service.id];
-      int duration = effectivePricing?['duration'] ?? service.duration;
-    }
+    // Get the pricing details
+    final Map<String, dynamic> pricingDetails = await _calculateTotalPriceWithDetails();
 
-    for (var package in cartPackages) {
-      final packagePricing = await _calculatePackagePricing(package);
-      int packageDuration = packagePricing['duration'] ?? package.estimatedDuration;
-      debugPrint('Package: ${package.name} - Duration: $packageDuration min');
-    }
-
-    // Calculate total pricing including both services and packages
     double totalFixedPrice = pricingDetails['total'] ?? 0.0;
-    String totalRangePrice = _getTotalRangePriceDisplay(pricingDetails);
+    double minTotal = pricingDetails['minTotal'] ?? 0.0;
+    double maxTotal = pricingDetails['maxTotal'] ?? 0.0;
+    bool hasRangePricing = pricingDetails['hasRangePricing'] ?? false;
+
+    double totalRangePriceMin = minTotal;
+    double totalRangePriceMax = maxTotal;
+    // Calculate subtotal and SST
+    double subtotal = _calculateSubtotal();
+    double sst = subtotal * 0.08; // 8% SST
+    double finalTotal = subtotal + sst;
+
+    // Calculate ranges if have range pricing
+    String subtotalRange = '';
+    String sstRange = '';
+    String finalTotalRange = '';
+
+    if (hasRangePricing && maxTotal > minTotal) {
+      subtotalRange = 'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}';
+      double minSST = minTotal * 0.08;
+      double maxSST = maxTotal * 0.08;
+      sstRange = 'RM${minSST.toStringAsFixed(2)} - RM${maxSST.toStringAsFixed(2)}';
+      finalTotalRange = 'RM${(minTotal + minSST).toStringAsFixed(2)} - RM${(maxTotal + maxSST).toStringAsFixed(2)}';
+    }
 
     Navigator.push(
       context,
@@ -1571,12 +1578,79 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
           selectedVehiclePlateNo: carOwnerVehiclePlateNo,
           totalEstimatedDuration: totalDuration,
           totalFixedPrice: totalFixedPrice,
-          totalRangePrice: totalRangePrice,
+          totalRangePriceMin: totalRangePriceMin,
+          totalRangePriceMax: totalRangePriceMax,
           packageDurations: packageDurations,
-          packagePricing: packagePricing,
+          packagePricing: packagePricingDetails,
+          subtotal: subtotal,
+          subtotalRange: subtotalRange,
+          sst: sst,
+          sstRange: sstRange,
+          totalEstAmount: finalTotal,
+          totalEstAmountRange: finalTotalRange,
+          hasRangePricing: hasRangePricing,
         ),
       ),
     );
+  }
+
+  double _calculateSubtotal() {
+    double subtotal = 0.0;
+
+    // Calculate packages subtotal
+    for (var package in cartPackages) {
+      final pricing = packagePricing[package.id] ?? {};
+
+      double partPrice = pricing['totalPartPrice'] ?? 0.0;
+      double labourPrice = pricing['totalLabourPrice'] ?? 0.0;
+      double partPriceMin = pricing['minPartPrice'] ?? 0.0;
+      double partPriceMax = pricing['maxPartPrice'] ?? 0.0;
+      double labourPriceMin = pricing['minLabourPrice'] ?? 0.0;
+      double labourPriceMax = pricing['maxLabourPrice'] ?? 0.0;
+
+      bool hasFixedPricing = partPrice > 0 || labourPrice > 0;
+      bool hasRangePricing = partPriceMin > 0 || partPriceMax > 0 || labourPriceMin > 0 || labourPriceMax > 0;
+
+      double packageSubtotal = 0.0;
+
+      if (hasFixedPricing) {
+        // Use fixed pricing when available
+        packageSubtotal = partPrice + labourPrice;
+      } else if (hasRangePricing) {
+        // Use minimum of range when have range pricing but no fixed pricing
+        packageSubtotal = partPriceMin + labourPriceMin;
+      }
+      // If no pricing at all, packageSubtotal remains 0.0
+
+      subtotal += packageSubtotal;
+    }
+
+    // Calculate services subtotal
+    for (var service in cartItems) {
+      final pricing = effectivePricing[service.id] ?? {};
+
+      double labour = pricing['labourPrice'] ?? service.labourPrice;
+      double parts = pricing['price'] ?? service.partPrice;
+      double labourMin = pricing['labourPriceMin'] ?? service.labourPriceMin;
+      double labourMax = pricing['labourPriceMax'] ?? service.labourPriceMax;
+      double partsMin = pricing['priceMin'] ?? service.partPriceMin;
+      double partsMax = pricing['priceMax'] ?? service.partPriceMax;
+
+      bool hasFixedPricing = parts > 0 || labour > 0;
+      bool hasRangePricing = partsMin > 0 || partsMax > 0 || labourMin > 0 || labourMax > 0;
+
+      double serviceSubtotal = 0.0;
+
+      if (hasFixedPricing) {
+        serviceSubtotal = parts + labour;
+      } else if (hasRangePricing) {
+        serviceSubtotal = partsMin + labourMin;
+      }
+
+      subtotal += serviceSubtotal;
+
+    }
+    return subtotal;
   }
 
   Future<int> _calculateTotalDuration() async {
@@ -1589,10 +1663,8 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
       totalDuration += duration;
     }
 
-    // Calculate packages duration - FIX: Use async calculation
     for (var package in cartPackages) {
       final packagePricing = await _calculatePackagePricing(package);
-      // FIX: Convert the duration to int since it might come as num from Firestore
       int packageDuration = (packagePricing['duration'] ?? package.estimatedDuration).toInt();
       totalDuration += packageDuration;
     }
@@ -2760,7 +2832,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         effectivePricing?['labourPriceMax'] ?? service.labourPriceMax;
     int duration = effectivePricing?['duration'] ?? service.duration;
 
-    // Check if we have any fixed pricing (either parts OR labour, not necessarily both)
     bool hasAnyFixedPricing = partPrice > 0 || labourPrice > 0;
     bool hasAnyRangePricing =
         partPriceMin > 0 ||
@@ -2776,7 +2847,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // If both fixed and range pricing exist - FIXED: Show proper range from min to max
+        // If both fixed and range pricing exist
         if (hasAnyFixedPricing && hasAnyRangePricing && maxTotal > 0)
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2887,14 +2958,11 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
     int validOffers = 0;
 
     try {
-      // String serviceCenterToUse = selectedServiceCenterId ?? package.serviceCenterId;
 
-      // Get ONLY ACTIVE service offers for this package
       final packageOffersQuery = await FirebaseFirestore.instance
           .collection('service_center_services_offer')
           .where('servicePackageId', isEqualTo: package.id)
           .where('active', isEqualTo: true)
-          // .where('serviceCenterId', isEqualTo: serviceCenterToUse)
           .get();
 
       Set<String> requiredTierIds = {};
@@ -2928,7 +2996,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
       for (var offerDoc in packageOffersQuery.docs) {
         final offerData = offerDoc.data();
 
-        // Triple-check that the offer is active
         final isOfferActive = offerData['active'] == true;
         if (!isOfferActive) {
           continue;
@@ -2986,7 +3053,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
           );
         }
 
-        // Only include compatible ACTIVE offers in pricing calculation
+        // Only include compatible active offers in pricing calculation
         if (isOfferCompatible) {
           double partPrice = effectivePricing?['price'] ?? offer.partPrice;
           double labourPrice = effectivePricing?['labourPrice'] ?? offer.labourPrice;
@@ -3005,7 +3072,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
           totalPartPriceMax += partPriceMax;
           totalLabourPriceMin += labourPriceMin;
           totalLabourPriceMax += labourPriceMax;
-          totalDuration += duration; // FIX: Properly accumulate duration
+          totalDuration += duration;
 
           // Check if all offers have fixed pricing
           if (partPrice <= 0 || labourPrice <= 0) {
@@ -3014,7 +3081,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         }
       }
 
-      // FIX: If no valid offers found, use the package's default duration
       if (validOffers == 0) {
         totalDuration = package.estimatedDuration;
       }
@@ -3028,11 +3094,10 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         'maxPartPrice': totalPartPriceMax,
         'minLabourPrice': totalLabourPriceMin,
         'maxLabourPrice': totalLabourPriceMax,
-        'duration': totalDuration, // FIX: Use the calculated total duration
+        'duration': totalDuration,
         'validOffers': validOffers,
       };
     } catch (e) {
-      debugPrint('Error calculating package pricing for ${package.name}: $e');
       return {
         'hasFixedPrice': false,
         'fixedPrice': 0.0,
@@ -3042,7 +3107,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         'maxPartPrice': 0.0,
         'minLabourPrice': 0.0,
         'maxLabourPrice': 0.0,
-        'duration': package.estimatedDuration, // FIX: Fallback to package duration
+        'duration': package.estimatedDuration,
         'validOffers': 0,
       };
     }
@@ -3072,7 +3137,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         double labourPriceMax = pricing['maxLabourPrice'] as double;
         int duration = pricing['duration'] as int;
 
-        // Check if we have any fixed pricing (either parts OR labour, not necessarily both) - SAME AS SERVICES
         bool hasAnyFixedPricing = partPrice > 0 || labourPrice > 0;
         bool hasAnyRangePricing = partPriceMin > 0 || partPriceMax > 0 || labourPriceMin > 0 || labourPriceMax > 0;
 
@@ -3084,7 +3148,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // If both fixed and range pricing exist - FIXED: Show proper range from min to max
+            // If both fixed and range pricing exist
             if (hasAnyFixedPricing && hasAnyRangePricing && maxTotal > 0)
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3104,7 +3168,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                   ),
                 ],
               )
-            // If only fixed pricing exists (at least one component has a price) - SAME AS SERVICES
+            // If only fixed pricing exists
             else if (hasAnyFixedPricing && !hasAnyRangePricing)
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3124,7 +3188,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                   ),
                 ],
               )
-            // If only range pricing exists - SAME AS SERVICES
+            // If only range pricing exists
             else if (hasAnyRangePricing && (minTotal > 0 || maxTotal > 0))
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -3144,7 +3208,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                     ),
                   ],
                 )
-              // Fallback - no pricing available - SAME AS SERVICES
+              // Fallback to no pricing available
               else
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -3381,7 +3445,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
     double labourPriceMin = effectivePricing?['labourPriceMin'] ?? service.labourPriceMin;
     double labourPriceMax = effectivePricing?['labourPriceMax'] ?? service.labourPriceMax;
 
-    // Check if we have any fixed pricing (either parts OR labour, not necessarily both)
+    // Check if have any fixed pricing either parts or labour, not necessarily both
     bool hasAnyFixedPricing = partPrice > 0 || labourPrice > 0;
     bool hasAnyRangePricing = partPriceMin > 0 || partPriceMax > 0 || labourPriceMin > 0 || labourPriceMax > 0;
 
@@ -3439,7 +3503,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                       ),
                     ],
                     const SizedBox(height: 8),
-                    // Apply the same pricing logic as services and packages
                     if (hasAnyFixedPricing && hasAnyRangePricing && maxTotal > 0)
                       Text(
                         'RM${(fixedTotal + minTotal).toStringAsFixed(2)} - RM${(fixedTotal + maxTotal).toStringAsFixed(2)}',
@@ -3521,10 +3584,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                     },
                     icon: const Icon(Icons.remove_circle_outline),
                     color: AppColors.errorColor,
-                    style: IconButton.styleFrom(
-                      backgroundColor: AppColors.errorColor.withOpacity(0.1),
-                      padding: const EdgeInsets.all(8),
-                    ),
                   ),
                 ],
               ),
@@ -3594,14 +3653,13 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                           'maxLabourPrice': 0.0,
                         };
 
-                        double partPrice = pricing['totalPartPrice'] as double;
-                        double labourPrice = pricing['totalLabourPrice'] as double;
-                        double partPriceMin = pricing['minPartPrice'] as double;
-                        double partPriceMax = pricing['maxPartPrice'] as double;
-                        double labourPriceMin = pricing['minLabourPrice'] as double;
-                        double labourPriceMax = pricing['maxLabourPrice'] as double;
+                        double partPrice = pricing['totalPartPrice'] ?? 0.0;
+                        double labourPrice = pricing['totalLabourPrice'] ?? 0.0;
+                        double partPriceMin = pricing['minPartPrice'] ?? 0.0;
+                        double partPriceMax = pricing['maxPartPrice'] ?? 0.0;
+                        double labourPriceMin = pricing['minLabourPrice'] ?? 0.0;
+                        double labourPriceMax = pricing['maxLabourPrice'] ?? 0.0;
 
-                        // Apply the EXACT SAME logic as services
                         bool hasAnyFixedPricing = partPrice > 0 || labourPrice > 0;
                         bool hasAnyRangePricing = partPriceMin > 0 || partPriceMax > 0 || labourPriceMin > 0 || labourPriceMax > 0;
 
@@ -3695,10 +3753,6 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                     },
                     icon: const Icon(Icons.remove_circle_outline),
                     color: AppColors.errorColor,
-                    style: IconButton.styleFrom(
-                      backgroundColor: AppColors.errorColor.withOpacity(0.1),
-                      padding: const EdgeInsets.all(8),
-                    ),
                   ),
                 ],
               ),
@@ -3731,82 +3785,58 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
         double minTotal = data['minTotal'] ?? 0.0;
         double maxTotal = data['maxTotal'] ?? 0.0;
         bool hasRangePricing = data['hasRangePricing'] ?? false;
-
         bool cartHasItems = cartItems.isNotEmpty || cartPackages.isNotEmpty;
+
+        // Calculate subtotal and SST
+        double subtotal = total;
+        double sst = subtotal * 0.08;
+        double finalTotal = subtotal + sst;
+
+        // Calculate ranges if have range pricing
+        String subtotalRange = '';
+        String sstRange = '';
+        String finalTotalRange = '';
+
+        if (hasRangePricing && maxTotal > minTotal) {
+          subtotalRange = 'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}';
+          double minSST = minTotal * 0.08;
+          double maxSST = maxTotal * 0.08;
+          sstRange = 'RM${minSST.toStringAsFixed(2)} - RM${maxSST.toStringAsFixed(2)}';
+          finalTotalRange = 'RM${(minTotal + minSST).toStringAsFixed(2)} - RM${(maxTotal + maxSST).toStringAsFixed(2)}';
+        }
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Total:',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                if (cartHasItems && total > 0)
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      // Show range if ANY item has range pricing
-                      if (hasRangePricing && maxTotal > minTotal)
-                        Text(
-                          'RM${minTotal.toStringAsFixed(2)} - RM${maxTotal.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.warningColor,
-                          ),
-                        )
-                      else
-                        Text(
-                          'RM${total.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.primaryColor,
-                          ),
-                        ),
-                      if (hasRangePricing)
-                        Text(
-                          'Estimated total',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textSecondary,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                    ],
-                  )
-                else if (cartHasItems)
-                  Text(
-                    'RM0.00',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textMuted,
-                    ),
-                  )
-                else
-                  Text(
-                    'RM0.00',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.textMuted,
-                    ),
-                  ),
-              ],
+            _buildPriceRow(
+              'Subtotal:',
+              hasRangePricing ? subtotalRange : 'RM${subtotal.toStringAsFixed(2)}',
+              isTotal: false,
             ),
-            // Show range information if we have range pricing
+            const SizedBox(height: 8),
+
+            _buildPriceRow(
+              'SST (8%):',
+              hasRangePricing ? sstRange : 'RM${sst.toStringAsFixed(2)}',
+              isTotal: false,
+            ),
+            const SizedBox(height: 12),
+
+            Divider(height: 1, color: AppColors.borderColor),
+            const SizedBox(height: 12),
+
+            _buildPriceRow(
+              'Est. Total Amount:',
+              hasRangePricing ? finalTotalRange : 'RM${finalTotal.toStringAsFixed(2)}',
+              isTotal: true,
+              isRange: hasRangePricing,
+            ),
+
+            // Range pricing information
             if (cartHasItems && hasRangePricing && maxTotal > minTotal)
               Container(
-                margin: const EdgeInsets.only(top: 8),
-                padding: const EdgeInsets.all(8),
+                margin: const EdgeInsets.only(top: 12),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: AppColors.warningColor.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(8),
@@ -3821,7 +3851,7 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Final amount may vary based on actual parts and labour required.',
+                        'Final amount may vary based on actual parts and labour required. This is an estimated total.',
                         style: TextStyle(
                           fontSize: 12,
                           color: AppColors.warningColor,
@@ -3834,6 +3864,32 @@ class _SearchServicesPageState extends State<SearchServicesPage> {
           ],
         );
       },
+    );
+  }
+
+  Widget _buildPriceRow(String label, String value, {bool isTotal = false, bool isRange = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: isTotal ? 14 : 12,
+            fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            color: isTotal ? AppColors.textPrimary : AppColors.textSecondary,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: isTotal ? 14 : 14,
+            fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
+            color: isTotal
+                ? (isRange ? AppColors.warningColor : AppColors.primaryColor)
+                : AppColors.textPrimary,
+          ),
+        ),
+      ],
     );
   }
 

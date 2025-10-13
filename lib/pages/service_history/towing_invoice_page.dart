@@ -5,21 +5,39 @@ import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-class ServiceInvoicePage extends StatefulWidget {
-  final String invoiceId;
-  final String serviceBookingId;
+class AppColors {
+  static const Color primaryColor = Color(0xFFFF6B00);
+  static const Color primaryLight = Color(0xFFF3A169);
+  static const Color primaryDark = Color(0xFF1D4ED8);
+  static const Color secondaryColor = Color(0xFF1E293B);
+  static const Color backgroundColor = Color(0xFFF8FAFC);
+  static const Color cardColor = Colors.white;
+  static const Color surfaceColor = Color(0xFFF1F5F9);
+  static const Color accentColor = Color(0xFF06B6D4);
+  static const Color successColor = Color(0xFF10B981);
+  static const Color warningColor = Color(0xFFF59E0B);
+  static const Color errorColor = Color(0xFFEF4444);
+  static const Color textPrimary = Color(0xFF0F172A);
+  static const Color textSecondary = Color(0xFF64748B);
+  static const Color textMuted = Color(0xFF94A3B8);
+  static const Color borderColor = Color(0xFFE2E8F0);
+}
 
-  const ServiceInvoicePage({
+class TowingInvoicePage extends StatefulWidget {
+  final String invoiceId;
+  final String towingRequestId;
+
+  const TowingInvoicePage({
     Key? key,
     required this.invoiceId,
-    this.serviceBookingId = '',
+    this.towingRequestId = '',
   }) : super(key: key);
 
   @override
-  _ServiceInvoicePageState createState() => _ServiceInvoicePageState();
+  _TowingInvoicePageState createState() => _TowingInvoicePageState();
 }
 
-class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
+class _TowingInvoicePageState extends State<TowingInvoicePage> {
   Map<String, dynamic>? invoiceData;
   Map<String, dynamic>? serviceCenterData;
   bool isLoading = true;
@@ -34,7 +52,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   Future<void> _loadInvoiceData() async {
     try {
       DocumentSnapshot invoiceSnapshot = await FirebaseFirestore.instance
-          .collection('service_invoice')
+          .collection('towing_invoice')
           .doc(widget.invoiceId)
           .get();
 
@@ -50,7 +68,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         });
       }
     } catch (error) {
-      print('Error loading invoice: $error');
+      print('Error loading towing invoice: $error');
       setState(() {
         isLoading = false;
       });
@@ -82,7 +100,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     }
   }
 
-  // Helper methods
   String _getServiceCenterInfo(String key) {
     if (serviceCenterData == null) return 'N/A';
 
@@ -103,23 +120,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     if (directValue != null) return directValue.toString();
 
     return 'N/A';
-  }
-
-  String _formatDate(dynamic timestamp) {
-    if (timestamp == null) return 'N/A';
-    try {
-      DateTime date;
-      if (timestamp is Timestamp) {
-        date = timestamp.toDate();
-      } else if (timestamp is String) {
-        date = DateTime.parse(timestamp);
-      } else {
-        return 'Invalid Date';
-      }
-      return DateFormat('dd MMM yyyy').format(date);
-    } catch (e) {
-      return 'Invalid Date';
-    }
   }
 
   String _getFormattedAddress() {
@@ -148,170 +148,105 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     return addressParts.join(', ');
   }
 
-  List<Map<String, dynamic>> _getLabourItems() {
-    try {
-      final allServices = [
-        ...(invoiceData?['bookedServices'] ?? []),
-        ...(invoiceData?['packageServices'] ?? []),
-        ...(invoiceData?['additionalServices'] ?? []),
-      ];
+  double _getBaseTowingCost() {
+    return (invoiceData?['baseTowingCost'] ??
+        invoiceData?['pricingBreakdown']?['baseFee'] ?? 0).toDouble();
+  }
 
-      List<Map<String, dynamic>> labourItems = [];
+  double _getDistanceCost() {
+    return (invoiceData?['pricingBreakdown']?['distanceCost'] ?? 0).toDouble();
+  }
 
-      for (var service in allServices) {
-        if (service is Map<String, dynamic>) {
-          final labourPrice = (service['labourPrice'] ?? 0).toDouble();
-          if (labourPrice > 0) {
-            labourItems.add({
-              'description':
-              service['serviceName'] ?? service['packageName'] ?? 'Service',
-              'quantity': 1,
-              'unitPrice': labourPrice,
-              'amount': labourPrice,
-            });
-          }
-        }
+  double _getLuxurySurcharge() {
+    return (invoiceData?['pricingBreakdown']?['luxurySurcharge'] ?? 0).toDouble();
+  }
+
+  double _getAdditionalServicesTotal() {
+    final services = invoiceData?['additionalServices'] ?? [];
+    double total = 0.0;
+    for (var service in services) {
+      if (service is Map<String, dynamic>) {
+        total += (service['totalPrice'] ?? service['price'] ?? 0).toDouble();
       }
-
-      return labourItems;
-    } catch (e) {
-      print('Error in _getLabourItems: $e');
-      return [];
     }
-  }
-
-  List<Map<String, dynamic>> _getPartsItems() {
-    try {
-      final parts = [
-        ...(invoiceData?['usedParts'] ?? []),
-        ...(invoiceData?['standaloneParts'] ?? []),
-      ];
-      final allServices = [
-        ...(invoiceData?['bookedServices'] ?? []),
-        ...(invoiceData?['packageServices'] ?? []),
-        ...(invoiceData?['additionalServices'] ?? []),
-      ];
-
-      List<Map<String, dynamic>> partsItems = [];
-
-      for (var part in parts) {
-        if (part is Map<String, dynamic>) {
-          partsItems.add({
-            'description': 'Part: ${part['name'] ?? 'Unknown Part'}',
-            'quantity': part['quantity'] ?? 1,
-            'unitPrice': part['unitPrice'] ?? 0.0,
-            'amount': part['amount'],
-          });
-        }
-      }
-
-      for (var service in allServices) {
-        if (service is Map<String, dynamic>) {
-          final serviceName = service['serviceName'] ?? 'Unknown Service';
-
-          final servicePartsData = service['parts'];
-          List<dynamic> serviceParts = [];
-
-          if (servicePartsData is List) {
-            serviceParts = servicePartsData;
-          } else if (servicePartsData is Map<String, dynamic>) {
-            serviceParts = [servicePartsData];
-          }
-
-          for (var part in serviceParts) {
-            if (part is Map<String, dynamic>) {
-              partsItems.add({
-                'description': '${serviceName} - ${part['name'] ?? 'Part'}',
-                'quantity': part['quantity'] ?? 1,
-                'unitPrice': part['unitPrice'] ?? 0.0,
-                'amount': part['amount'] ?? 0.0,
-              });
-            }
-          }
-        }
-      }
-      return partsItems;
-    } catch (e) {
-      print('Error in _getPartsItems: $e');
-      return [];
-    }
-  }
-
-  bool _hasParts() {
-    try {
-      return _getPartsItems().isNotEmpty;
-    } catch (e) {
-      print('Error in _hasParts: $e');
-      return false;
-    }
-  }
-
-  double _getLabourSubtotal() {
-    return _getLabourItems().fold(
-      0.0,
-          (sum, item) {
-        final amount = item['amount'];
-        if (amount == null) return sum;
-
-        // Safely convert to double
-        if (amount is int) {
-          return sum + amount.toDouble();
-        } else if (amount is double) {
-          return sum + amount;
-        } else if (amount is String) {
-          return sum + (double.tryParse(amount) ?? 0.0);
-        }
-        return sum;
-      },
-    );
-  }
-
-  double _getPartsSubtotal() {
-    return _getPartsItems().fold(
-      0.0,
-          (sum, item) {
-        final amount = item['amount'];
-        if (amount == null) return sum;
-
-        // Safely convert to double
-        if (amount is int) {
-          return sum + amount.toDouble();
-        } else if (amount is double) {
-          return sum + amount;
-        } else if (amount is String) {
-          return sum + (double.tryParse(amount) ?? 0.0);
-        }
-        return sum;
-      },
-    );
+    return total;
   }
 
   double _getSubtotal() {
-    return _getLabourSubtotal() + _getPartsSubtotal();
+    return _getBaseTowingCost() + _getDistanceCost() + _getLuxurySurcharge() + _getAdditionalServicesTotal();
   }
 
   double _getTaxAmount() {
-    final payment = invoiceData?['payment'] ?? {};
-    final subtotal = _getSubtotal();
-    final total = (payment['total'] ?? 0).toDouble();
-    return total - subtotal;
+    return (invoiceData?['taxAmount'] ?? 0).toDouble();
   }
 
   double _getTotalAmount() {
-    final payment = invoiceData?['payment'] ?? {};
-    final total = payment['total'];
+    return (invoiceData?['totalAmount'] ?? _getSubtotal() + _getTaxAmount()).toDouble();
+  }
 
-    if (total == null) return 0.0;
+  List<Map<String, dynamic>> _getTowingServices() {
+    List<Map<String, dynamic>> services = [];
 
-    // Safely convert to double
-    if (total is int) {
-      return total.toDouble();
-    } else if (total is double) {
-      return total;
-    } else if (total is String) {
-      return double.tryParse(total) ?? 0.0;
+    // Base Towing Service
+    services.add({
+      'description': 'Base Towing Service',
+      'quantity': 1,
+      'unitPrice': _getBaseTowingCost(),
+      'amount': _getBaseTowingCost(),
+    });
+
+    // Distance Charge
+    if (_getDistanceCost() > 0) {
+      final pricingBreakdown = invoiceData?['pricingBreakdown'] ?? {};
+      services.add({
+        'description': 'Distance Charge (${pricingBreakdown['distanceInKm']} km)',
+        'quantity': pricingBreakdown['distanceInKm'] ?? 1,
+        'unitPrice': pricingBreakdown['perKmRate'] ?? 0.0,
+        'amount': _getDistanceCost(),
+      });
     }
-    return 0.0;
+
+    // Luxury Surcharge
+    if (_getLuxurySurcharge() > 0) {
+      services.add({
+        'description': 'Luxury Vehicle Surcharge',
+        'quantity': 1,
+        'unitPrice': _getLuxurySurcharge(),
+        'amount': _getLuxurySurcharge(),
+      });
+    }
+
+    // Additional Services
+    final additionalServices = invoiceData?['additionalServices'] ?? [];
+    for (var service in additionalServices) {
+      if (service is Map<String, dynamic>) {
+        services.add({
+          'description': service['name'] ?? 'Additional Service',
+          'quantity': service['quantity'] ?? 1,
+          'unitPrice': (service['unitPrice'] ?? service['price'] ?? 0).toDouble(),
+          'amount': (service['totalPrice'] ?? (service['unitPrice'] ?? service['price'] ?? 0) * (service['quantity'] ?? 1)).toDouble(),
+        });
+      }
+    }
+
+    return services;
+  }
+
+  String _formatDate(dynamic timestamp) {
+    if (timestamp == null) return 'N/A';
+    try {
+      DateTime date;
+      if (timestamp is Timestamp) {
+        date = timestamp.toDate();
+      } else if (timestamp is String) {
+        date = DateTime.parse(timestamp);
+      } else {
+        return 'Invalid Date';
+      }
+      return DateFormat('dd MMM yyyy').format(date);
+    } catch (e) {
+      return 'Invalid Date';
+    }
   }
 
   String _formatDateTime(dynamic timestamp) {
@@ -390,6 +325,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           pw.SizedBox(height: 8),
           _buildPdfServicesTable(),
           pw.SizedBox(height: 8),
+          _buildPdfDriverInfo(),
+          pw.SizedBox(height: 8),
           _buildPdfTotals(),
           pw.SizedBox(height: 8),
           _buildPdfFooter(),
@@ -434,7 +371,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
               style: pw.TextStyle(fontSize: 8),
             ),
             pw.Text(
-              'BOOKING NO: ${invoiceData?['serviceBookingId'] ?? ''}',
+              'REQUEST NO: ${invoiceData?['towingRequestId'] ?? ''}',
               style: pw.TextStyle(fontSize: 8),
             ),
           ],
@@ -455,6 +392,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   pw.Widget _buildPdfCustomerVehicleInfo() {
     final customerInfo = invoiceData?['customerInfo'] ?? {};
     final vehicleInfo = invoiceData?['vehicleInfo'] ?? {};
+    final locationInfo = invoiceData?['locationInfo'] ?? {};
 
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -475,14 +413,17 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           'Plate Number: ${vehicleInfo['plateNumber'] ?? 'N/A'}',
           style: pw.TextStyle(fontSize: 8),
         ),
+        pw.Text(
+          'Pickup: ${locationInfo['pickupAddress'] ?? 'N/A'}',
+          style: pw.TextStyle(fontSize: 8),
+        ),
         pw.Divider(thickness: 0.5),
       ],
     );
   }
 
   pw.Widget _buildPdfServicesTable() {
-    final labourItems = _getLabourItems();
-    final partsItems = _getPartsItems();
+    final services = _getTowingServices();
 
     return pw.Column(
       children: [
@@ -523,94 +464,71 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         ),
         pw.Divider(thickness: 0.5),
 
-        // Labour Section
-        if (labourItems.isNotEmpty) ...[
-          pw.Row(
+        // Services Section
+        pw.Row(
+          children: [
+            pw.Text(
+              'TOWING SERVICES',
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        ...services
+            .map(
+              (item) => pw.Row(
             children: [
-              pw.Text(
-                'LABOUR CHARGES',
-                style: pw.TextStyle(
-                  fontSize: 8,
-                  fontWeight: pw.FontWeight.bold,
+              pw.Expanded(
+                flex: 3,
+                child: pw.Text(
+                  item['description'],
+                  style: pw.TextStyle(fontSize: 8),
+                ),
+              ),
+              pw.Expanded(
+                child: pw.Text(
+                  '${item['quantity']}',
+                  style: pw.TextStyle(fontSize: 8),
+                  textAlign: pw.TextAlign.center,
+                ),
+              ),
+              pw.Expanded(
+                child: pw.Text(
+                  _formatPrice(item['amount']),
+                  style: pw.TextStyle(fontSize: 8),
+                  textAlign: pw.TextAlign.right,
                 ),
               ),
             ],
           ),
-          ...labourItems
-              .map(
-                (item) => pw.Row(
-              children: [
-                pw.Expanded(
-                  flex: 3,
-                  child: pw.Text(
-                    item['description'],
-                    style: pw.TextStyle(fontSize: 8),
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    '${item['quantity']}',
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.center,
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    _formatPrice(item['amount']),
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.right,
-                  ),
-                ),
-              ],
-            ),
-          )
-              .toList(),
-          pw.SizedBox(height: 4),
-        ],
+        )
+            .toList(),
+        pw.Divider(thickness: 0.5),
+      ],
+    );
+  }
 
-        // Parts Section
-        if (_hasParts()) ...[
-          pw.Row(
-            children: [
-              pw.Text(
-                'PARTS & MATERIALS',
-                style: pw.TextStyle(
-                  fontSize: 8,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          ...partsItems
-              .map(
-                (item) => pw.Row(
-              children: [
-                pw.Expanded(
-                  flex: 3,
-                  child: pw.Text(
-                    item['description'],
-                    style: pw.TextStyle(fontSize: 8),
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    '${item['quantity']}',
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.center,
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    _formatPrice(item['amount']),
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.right,
-                  ),
-                ),
-              ],
-            ),
-          )
-              .toList(),
-        ],
+  pw.Widget _buildPdfDriverInfo() {
+    final driverInfo = invoiceData?['driverInfo'];
+    if (driverInfo == null) return pw.SizedBox.shrink();
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          'Driver: ${driverInfo['name'] ?? 'N/A'}',
+          style: pw.TextStyle(fontSize: 8),
+        ),
+        pw.Text(
+          'Contact: ${driverInfo['contactNumber'] ?? 'N/A'}',
+          style: pw.TextStyle(fontSize: 8),
+        ),
+        pw.Text(
+          'Vehicle: ${driverInfo['vehicle']?['make']} ${driverInfo['vehicle']?['model']}',
+          style: pw.TextStyle(fontSize: 8),
+        ),
         pw.Divider(thickness: 0.5),
       ],
     );
@@ -619,8 +537,13 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   pw.Widget _buildPdfTotals() {
     return pw.Column(
       children: [
-        _buildPdfTotalRow('Labour Subtotal:', _getLabourSubtotal()),
-        _buildPdfTotalRow('Parts Subtotal:', _getPartsSubtotal()),
+        _buildPdfTotalRow('Base Towing:', _getBaseTowingCost()),
+        if (_getDistanceCost() > 0)
+          _buildPdfTotalRow('Distance Charge:', _getDistanceCost()),
+        if (_getLuxurySurcharge() > 0)
+          _buildPdfTotalRow('Luxury Surcharge:', _getLuxurySurcharge()),
+        if (_getAdditionalServicesTotal() > 0)
+          _buildPdfTotalRow('Additional Services:', _getAdditionalServicesTotal()),
         _buildPdfTotalRow('Subtotal:', _getSubtotal(), isBold: true),
         if (_getTaxAmount() > 0)
           _buildPdfTotalRow('SST (8%):', _getTaxAmount(), isTax: true),
@@ -667,16 +590,11 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     return pw.Column(
       children: [
         pw.Text(
-          '** OFFICIAL INVOICE - PLEASE PAY BEFORE SERVICE **',
+          '** OFFICIAL TOWING INVOICE - THANK YOU FOR YOUR BUSINESS **',
           style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
           textAlign: pw.TextAlign.center,
         ),
         pw.SizedBox(height: 4),
-        pw.Text(
-          'Thank you for your business!',
-          style: pw.TextStyle(fontSize: 8),
-          textAlign: pw.TextAlign.center,
-        ),
         pw.Text(
           'For inquiries, please contact our service center',
           style: pw.TextStyle(fontSize: 7),
@@ -686,7 +604,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
-  // Mobile UI Widgets - Matching Receipt Style
   Widget _buildInvoiceHeader() {
     return Card(
       margin: EdgeInsets.all(16),
@@ -796,11 +713,11 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'BOOKING NO',
+                      'REQUEST NO',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     Text(
-                      invoiceData?['serviceBookingId']?.toString().substring(0, 8) ?? '',
+                      invoiceData?['towingRequestId']?.toString().substring(0, 8) ?? '',
                       style: TextStyle(fontSize: 14),
                     ),
                   ],
@@ -816,6 +733,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   Widget _buildCustomerVehicleInfo() {
     final customerInfo = invoiceData?['customerInfo'] ?? {};
     final vehicleInfo = invoiceData?['vehicleInfo'] ?? {};
+    final locationInfo = invoiceData?['locationInfo'] ?? {};
 
     return Card(
       margin: EdgeInsets.all(16),
@@ -880,7 +798,25 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                     style: TextStyle(fontSize: 14),
                   ),
                   Text(
-                    'Chassis No: ${vehicleInfo['vin'] ?? 'N/A'}',
+                    'Size Class: ${vehicleInfo['sizeClass'] ?? 'N/A'}',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+            Divider(),
+            ListTile(
+              leading: Icon(Icons.location_on, color: Colors.orange),
+              title: Text(
+                'PICKUP LOCATION',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(height: 8),
+                  Text(
+                    locationInfo['pickupAddress'] ?? 'N/A',
                     style: TextStyle(fontSize: 14),
                   ),
                 ],
@@ -893,8 +829,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   }
 
   Widget _buildServicesBreakdown() {
-    final labourItems = _getLabourItems();
-    final partsItems = _getPartsItems();
+    final services = _getTowingServices();
 
     return Card(
       margin: EdgeInsets.all(16),
@@ -917,48 +852,31 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             Padding(
               padding: EdgeInsets.all(16),
               child: Text(
-                'SERVICES',
+                'TOWING SERVICES',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
-            // Labour Section
             Container(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               color: Colors.blue[50],
               child: Text(
-                'LABOUR CHARGES',
+                'SERVICE CHARGES',
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.blue[800],
                 ),
               ),
             ),
-            if (labourItems.isEmpty)
+            if (services.isEmpty)
               Padding(
                 padding: EdgeInsets.all(16),
                 child: Text(
-                  'No Labour Charge',
+                  'No services recorded',
                   style: TextStyle(color: Colors.grey),
                 ),
               )
             else
-              ...labourItems.map((item) => _buildServiceItemRow(item)).toList(),
-
-            // Parts Section
-            if (_hasParts()) ...[
-              Container(
-                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                color: Colors.orange[50],
-                child: Text(
-                  'PARTS & MATERIALS',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.orange[800],
-                  ),
-                ),
-              ),
-              ...partsItems.map((item) => _buildServiceItemRow(item)).toList(),
-            ],
+              ...services.map((item) => _buildServiceItemRow(item)).toList(),
           ],
         ),
       ),
@@ -996,6 +914,64 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
+  Widget _buildDriverInfo() {
+    final driverInfo = invoiceData?['driverInfo'];
+    if (driverInfo == null) return SizedBox.shrink();
+
+    return Card(
+      margin: EdgeInsets.all(16),
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade300),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: ListTile(
+          leading: Icon(Icons.emoji_people, color: Colors.purple),
+          title: Text(
+            'DRIVER INFORMATION',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(height: 8),
+              Text(
+                'Name: ${driverInfo['name'] ?? 'N/A'}',
+                style: TextStyle(fontSize: 14),
+              ),
+              Text(
+                'Contact: ${driverInfo['contactNumber'] ?? 'N/A'}',
+                style: TextStyle(fontSize: 14),
+              ),
+              Text(
+                'Email: ${driverInfo['email'] ?? 'N/A'}',
+                style: TextStyle(fontSize: 14),
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Vehicle: ${driverInfo['vehicle']?['make']} ${driverInfo['vehicle']?['model']}',
+                style: TextStyle(fontSize: 14),
+              ),
+              Text(
+                'Plate: ${driverInfo['vehicle']?['carPlate']}',
+                style: TextStyle(fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildTotalsSection() {
     return Card(
       margin: EdgeInsets.all(16),
@@ -1020,8 +996,13 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             SizedBox(height: 16),
-            _buildTotalRow('Labour Subtotal', _getLabourSubtotal()),
-            _buildTotalRow('Parts Subtotal', _getPartsSubtotal()),
+            _buildTotalRow('Base Towing', _getBaseTowingCost()),
+            if (_getDistanceCost() > 0)
+              _buildTotalRow('Distance Charge', _getDistanceCost()),
+            if (_getLuxurySurcharge() > 0)
+              _buildTotalRow('Luxury Surcharge', _getLuxurySurcharge()),
+            if (_getAdditionalServicesTotal() > 0)
+              _buildTotalRow('Additional Services', _getAdditionalServicesTotal()),
             Divider(),
             _buildTotalRow('Subtotal', _getSubtotal(), isBold: true),
             if (_getTaxAmount() > 0)
@@ -1065,169 +1046,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
-  Widget _buildWarrantyInfo() {
-    final warranty = invoiceData?['warranty'] ?? {};
-    final labourWarranty = warranty['labour'] ?? {};
-    final partsWarranty = warranty['parts'] ?? {};
-
-    final hasLabourWarranty = (labourWarranty['days'] as int? ?? 0) > 0;
-    final hasPartsWarranty = (partsWarranty['days'] as int? ?? 0) > 0;
-
-    if (!hasLabourWarranty && !hasPartsWarranty) {
-      return Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(
-          child: Text(
-            'No warranty provided for this service',
-            style: TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-        ),
-      );
-    }
-
-    return Padding(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'WARRANTY INFORMATION',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.blue[800],
-            ),
-          ),
-          SizedBox(height: 12),
-          if (hasLabourWarranty)
-            _buildWarrantyItem('Labour Warranty:', labourWarranty),
-          if (hasPartsWarranty)
-            _buildWarrantyItem('Parts Warranty:', partsWarranty),
-          if (warranty['generalTerms'] != null)
-            _buildWarrantyDetail('Terms:', warranty['generalTerms']),
-          if (warranty['exclusions'] != null)
-            _buildWarrantyDetail('Exclusions:', warranty['exclusions']),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWarrantyItem(String label, Map<String, dynamic> warranty) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.check_circle, color: Colors.green, size: 16),
-          SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$label ${warranty['days']} days (until ${_formatDate(warranty['endDate'])})',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                if (warranty['notes'] != null)
-                  Text(
-                    warranty['notes'],
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWarrantyDetail(String label, String text) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.info, color: Colors.orange, size: 16),
-          SizedBox(width: 8),
-          Expanded(child: Text('$label $text', style: TextStyle(fontSize: 14))),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildServiceMaintenance() {
-    final serviceMaintenances = invoiceData?['serviceMaintenances'] ?? [];
-
-    if (serviceMaintenances.isEmpty || serviceMaintenances is! List) {
-      return SizedBox.shrink(); // Hide if no maintenance data
-    }
-
-    return Card(
-      margin: EdgeInsets.all(16),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: Colors.grey.shade300),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 10,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'NEXT SERVICE REMINDER',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: serviceMaintenances.map<Widget>((maintenance) {
-                  final serviceType = (maintenance['serviceType'] as String? ?? '')
-                      .replaceAll('_', ' ');
-                  final nextServiceMileage = maintenance['nextServiceMileage'] ?? '';
-                  final nextServiceDate = maintenance['nextServiceDate'];
-
-                  return Padding(
-                    padding: EdgeInsets.only(bottom: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          serviceType.isNotEmpty ? serviceType : 'Service',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          'Next service at $nextServiceMileage km or by ${_formatDate(nextServiceDate)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildImportantNotes() {
     return Card(
       margin: EdgeInsets.all(16),
@@ -1255,17 +1073,17 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             SizedBox(height: 16),
             _buildNoteItem(
               Icons.payment,
-              'Please make payment before service begins',
+              'Please make payment upon service completion',
             ),
             _buildNoteItem(
               Icons.receipt,
-              'This is an official invoice for service estimation',
+              'This is an official invoice for towing services',
             ),
             _buildNoteItem(
               Icons.phone,
               'For inquiries, please contact our service center',
             ),
-            _buildNoteItem(Icons.favorite, 'Thank you for your business!'),
+            _buildNoteItem(Icons.favorite, 'Thank you for choosing our towing service!'),
           ],
         ),
       ),
@@ -1333,7 +1151,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('OFFICIAL INVOICE'),
+        title: Text('TOWING INVOICE'),
         backgroundColor: Colors.blue[800],
         foregroundColor: Colors.white,
       ),
@@ -1348,9 +1166,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             _buildInvoiceDetails(),
             _buildCustomerVehicleInfo(),
             _buildServicesBreakdown(),
+            _buildDriverInfo(),
             _buildTotalsSection(),
-            _buildWarrantyInfo(),
-            _buildServiceMaintenance(),
             _buildImportantNotes(),
             _buildActionButtons(),
             SizedBox(height: 20),

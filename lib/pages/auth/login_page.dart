@@ -26,6 +26,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _rememberMe = false;
+ bool _isDriverLogin = false;
 
   late AnimationController _animationController;
   late Animation<double> _fadeAnimation;
@@ -141,10 +142,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     final prefs = await SharedPreferences.getInstance();
     final savedEmail = prefs.getString('saved_email');
     final remember = prefs.getBool('remember_me') ?? false;
+    final isDriver = prefs.getBool('is_driver_login') ?? false;
 
     if (remember) {
       setState(() {
         _rememberMe = true;
+        _isDriverLogin = isDriver;
         if (savedEmail != null) _emailController.text = savedEmail;
       });
       if (savedEmail != null && savedEmail.isNotEmpty) {
@@ -172,7 +175,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
       final password = _passwordController.text.trim();
 
       // Use AuthService for login
-      final result = await _authService.loginCarOwner(
+      final result = _isDriverLogin
+          ? await _authService.loginTowingDriver(
+        email: email,
+        password: password,
+      )
+          : await _authService.loginCarOwner(
         email: email,
         password: password,
       );
@@ -181,6 +189,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         final userId = result.userId ?? 'guest';
         final userName = result.userName;
         final userEmail = result.userEmail;
+        final userRole = _isDriverLogin ? 'driver' : 'customer';
 
         final biometricEnabled = await _isBiometricEnabledForUser(email);
         if (!biometricEnabled && _canCheckBiometrics) {
@@ -218,7 +227,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
           }
         }
 
-        await _connectUser(userId, userName ?? 'Guest', userEmail);
+        await _connectUser(userId, userName ?? 'Guest', userEmail, userRole);
 
         // await _saveCredentials(email, password);
 
@@ -227,9 +236,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
         if (_rememberMe) {
           await prefs.setString('saved_email', email);
           await prefs.setBool('remember_me', true);
+          await prefs.setBool('is_driver_login', _isDriverLogin);
+
         } else {
           await prefs.remove('saved_email');
           await prefs.setBool('remember_me', false);
+          await prefs.setBool('is_driver_login', false);
         }
 
         if (mounted) {
@@ -239,15 +251,28 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
             type: SnackBarType.success,
           );
 
-          Navigator.pushReplacementNamed(
-            context,
-            '/home',
-            arguments: {
-              'userId': userId,
-              'userName': userName,
-              'userEmail': userEmail,
-            },
-          );
+          if (_isDriverLogin) {
+            Navigator.pushReplacementNamed(
+              context,
+              '/driver/home',
+              arguments: {
+                'userId': userId,
+                'userName': userName,
+                'userEmail': userEmail,
+                'userData': result.userData,
+              },
+            );
+          } else {
+            Navigator.pushReplacementNamed(
+              context,
+              '/home',
+              arguments: {
+                'userId': userId,
+                'userName': userName,
+                'userEmail': userEmail,
+              },
+            );
+          }
         }
       } else {
         if (mounted) {
@@ -285,7 +310,6 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   }
 
   Future<void> _handleForgotPassword() async {
-    // Navigate to forgot password page
     Navigator.pushNamed(context, '/forgot-password');
   }
 
@@ -293,6 +317,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     String userId,
     String? userName,
     String? userEmail,
+    String userRole,
   ) async {
     try {
       final chatClient = StreamChat.of(context).client;
@@ -383,6 +408,8 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                               const Spacer(),
                               _buildHeader(isSmall),
                               SizedBox(height: isSmall ? 24 : 40),
+                              _buildLoginTypeToggle(),
+                              SizedBox(height: isSmall ? 16 : 24),
                               _buildLoginForm(),
                               SizedBox(height: isSmall ? 20 : 32),
                               _buildSignUpPrompt(),
@@ -439,6 +466,68 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
           textAlign: TextAlign.center,
         ),
       ],
+    );
+  }
+
+  Widget _buildLoginTypeToggle() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                if (_isDriverLogin) {
+                  setState(() => _isDriverLogin = false);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: !_isDriverLogin ? primaryColor : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Car Owner',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: !_isDriverLogin ? Colors.white : Colors.grey.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: GestureDetector(
+              onTap: () {
+                if (!_isDriverLogin) {
+                  setState(() => _isDriverLogin = true);
+                }
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: _isDriverLogin ? primaryColor : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Driver',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: _isDriverLogin ? Colors.white : Colors.grey.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

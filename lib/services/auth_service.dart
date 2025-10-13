@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:crypto/crypto.dart';
+import 'package:bcrypt/bcrypt.dart';
 
 class AuthService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -336,6 +337,82 @@ class AuthService {
       }
     } catch (e) {
       print("Login error: $e");
+      return AuthResult(
+          success: false,
+          errorMessage: "Login failed: $e"
+      );
+    }
+  }
+
+  Future<AuthResult> loginTowingDriver({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      final query = await _firestore
+          .collection('drivers')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (query.docs.isEmpty) {
+        return AuthResult(
+          success: false,
+          errorMessage: "Invalid email or password",
+        );
+      }
+
+      final doc = query.docs.first;
+      final data = doc.data();
+
+      String storedPassword = data['password'] ?? '';
+
+      if (storedPassword.isEmpty) {
+        return AuthResult(
+          success: false,
+          errorMessage: "Account data is corrupted. Please contact support.",
+        );
+      }
+
+      // Use bcrypt to verify the password
+      bool isPasswordValid = BCrypt.checkpw(password, storedPassword);
+
+      if (!isPasswordValid) {
+        return AuthResult(
+          success: false,
+          errorMessage: "Invalid email or password",
+        );
+      }
+
+      final status = data['status'] ?? '';
+
+      if (status == 'approved') {
+        currentUserId = doc.id;
+        try {
+          debugPrint('Driver authenticated: ${doc.id}');
+
+        } catch (e) {
+          debugPrint('Firebase Auth sign-in error: $e');
+        }
+
+        Map<String, dynamic> userData = Map.from(data);
+        userData.remove('password');
+
+        return AuthResult(
+          success: true,
+          userData: userData,
+          userId: doc.id,
+          userName: data['name'] as String?,
+          userEmail: data['email'] as String?,
+        );
+      } else {
+        return AuthResult(
+          success: false,
+          errorMessage: "Your account status is: $status. Please contact support.",
+        );
+      }
+    } catch (e) {
+      print("Driver login error: $e");
       return AuthResult(
           success: false,
           errorMessage: "Login failed: $e"

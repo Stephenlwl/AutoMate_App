@@ -27,7 +27,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage>
   final AuthService _authService = AuthService();
 
   // Page state
-  int _currentStep = 0; // 0: Email, 1: OTP, 2: New Password
+  int _currentStep = 0;
   bool _isLoading = false;
   bool _obscureNewPassword = true;
   bool _obscureConfirmPassword = true;

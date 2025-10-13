@@ -163,10 +163,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
       leading: IconButton(
         icon: Container(
           padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade100,
-            borderRadius: BorderRadius.circular(8),
-          ),
           child: const Icon(
             Icons.arrow_back_ios_new,
             color: secondaryColor,
@@ -187,10 +183,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
         IconButton(
           icon: Container(
             padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(8),
-            ),
             child: const Icon(Icons.refresh, color: secondaryColor, size: 20),
           ),
           onPressed: _loadVehicles,
@@ -479,10 +471,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
                       child: PopupMenuButton<String>(
                         icon: Container(
                           padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
                           child: const Icon(
                             Icons.more_vert,
                             color: Colors.white,
@@ -523,10 +511,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
                       child: PopupMenuButton<String>(
                         icon: Container(
                           padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
                           child: const Icon(
                             Icons.more_vert,
                             color: Colors.white,
@@ -542,12 +526,11 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
                                     (context) => EditVehiclePage(
                                       userId:
                                           widget
-                                              .userId, // or however you access the user ID
+                                              .userId,
                                       vehicle: vehicle,
                                       vehicleIndex: index,
                                       onVehicleUpdated: () {
-                                        // Refresh the vehicles list or update UI
-                                        _loadVehicles(); // or whatever your refresh method is called
+                                        _loadVehicles();
                                       },
                                     ),
                               ),
@@ -853,11 +836,9 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
             ),
       );
 
-      // Remove vehicle from list
       final updatedVehicles = List<Map<String, dynamic>>.from(_vehicles);
       updatedVehicles.removeAt(index);
 
-      // Update Firestore
       await FirebaseFirestore.instance
           .collection('car_owners')
           .doc(widget.userId)
@@ -866,10 +847,8 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
       // Close loading dialog
       Navigator.pop(context);
 
-      // Reload vehicles
       await _loadVehicles();
 
-      // Show success message
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Vehicle deleted successfully'),
@@ -880,7 +859,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
       // Close loading dialog
       Navigator.pop(context);
 
-      // Show error message
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Failed to delete vehicle: $e'),
@@ -891,8 +869,6 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
   }
 }
 
-
-// Add Vehicle Page
 class AddVehiclePage extends StatefulWidget {
   final String userId;
   final VoidCallback onVehicleAdded;
@@ -1177,7 +1153,6 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       _vocImageUrl = await ref.getDownloadURL();
       _showSuccessSnackBar("VOC uploaded and encrypted successfully!");
     } catch (e) {
-      // _showErrorSnackBar("Failed to upload VOC: $e");
     } finally {
       setState(() => _isUploadingImage = false);
     }
@@ -1290,16 +1265,13 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
         currentVehicles = List.from(doc.data()?['vehicles'] ?? []);
       }
 
-      // Add new vehicle
       currentVehicles.add(vehicleData);
 
-      // Update in Firestore
       await FirebaseFirestore.instance
           .collection('car_owners')
           .doc(widget.userId)
           .update({'vehicles': currentVehicles});
 
-      // Show success and go back
       _showSuccessSnackBar(
         'Vehicle added successfully! Awaiting admin approval.',
       );

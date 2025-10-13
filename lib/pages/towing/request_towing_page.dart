@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import '../towing/towing_request_tracking_page.dart';
 
 class EmergencyTowingPage extends StatefulWidget {
   final String userId;
@@ -32,9 +35,13 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
   Map<String, dynamic>? _selectedServiceCenterData;
   Position? _currentPosition;
   String? _currentLocation;
-  // dynamic _distance;
   double? _estimatedCost;
   double? _distanceInKm;
+  String? _currentStreet;
+  String? _currentCity;
+  String? _currentState;
+  String? _currentPostcode;
+  String? _currentCountry;
 
   // Form data
   final TextEditingController _descriptionController = TextEditingController();
@@ -54,7 +61,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
   // Available service centers with towing
   List<Map<String, dynamic>> _availableServiceCenters = [];
   bool _loadingServiceCenters = false;
-
+  bool loading = true;
   @override
   void initState() {
     super.initState();
@@ -62,11 +69,20 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
   }
 
   Future<void> _initializeData() async {
-    await _ensureLocationAvailable();
-    await _getCurrentLocation();
-    await _loadVehicleData();
-    await _loadTowingServiceTypes();
-    await _loadAvailableServiceCenters();
+    setState(() => loading = true);
+    try {
+      await _ensureLocationAvailable();
+      await _getCurrentLocation();
+      await _loadVehicleData();
+      await _loadTowingServiceTypes();
+      await _loadAvailableServiceCenters();
+    } catch (e) {
+      debugPrint('Initialization error: $e');
+    } finally {
+      if (mounted) {
+        setState(() => loading = false);
+      }
+    }
   }
 
   Future<void> _ensureLocationAvailable() async {
@@ -116,8 +132,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
         }
         return;
       }
-
-      // If we don't have current position, try to get it again
       if (_currentPosition == null) {
         await _getCurrentLocation();
       }
@@ -130,7 +144,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        debugPrint('Location services are disabled');
         return;
       }
 
@@ -140,31 +153,53 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
       }
 
       if (permission == LocationPermission.deniedForever) {
-        debugPrint('Location permissions permanently denied');
         return;
       }
 
+      // Get precise GPS coordinates
       _currentPosition = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
+        desiredAccuracy: LocationAccuracy.bestForNavigation,
       );
 
-      debugPrint(
-        'Current position: ${_currentPosition!.latitude}, ${_currentPosition!.longitude}',
+      double lat = _currentPosition!.latitude;
+      double lng = _currentPosition!.longitude;
+
+      final url = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$lat&lon=$lng&addressdetails=1',
       );
 
-      List<Placemark> placemarks = await placemarkFromCoordinates(
-        _currentPosition!.latitude,
-        _currentPosition!.longitude,
+      final response = await http.get(
+        url,
+        headers: {'User-Agent': 'AutoMate/1.0 (automate@gmail.com)'},
       );
 
-      if (placemarks.isNotEmpty) {
-        Placemark place = placemarks[0];
-        String city = place.locality?.isNotEmpty == true ? place.locality! : '';
-        String state = place.administrativeArea ?? '';
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final addressData = data['address'];
+
+        _currentStreet = [
+          addressData['road'],
+          addressData['neighbourhood'],
+          addressData['suburb'],
+        ].where((e) => e != null && e.isNotEmpty).join(', ');
+
+        _currentCity =
+            addressData['city'] ??
+            addressData['town'] ??
+            addressData['village'] ??
+            '';
+
+        _currentState = addressData['state'] ?? '';
+        _currentPostcode = addressData['postcode'] ?? '';
+        _currentCountry = addressData['country'] ?? '';
+
+        final shortAddress =
+            '$_currentStreet, $_currentCity, $_currentState $_currentPostcode, $_currentCountry';
         setState(() {
-          _currentLocation = city.isNotEmpty ? '$city, $state' : state;
+          _currentLocation = shortAddress;
         });
-        debugPrint('Current location: $_currentLocation');
+      } else {
+        debugPrint('Nominatim request failed with ${response.statusCode}');
       }
     } catch (e) {
       debugPrint('Location error: $e');
@@ -188,7 +223,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
 
         setState(() {
           _userVehicles = approvedVehicles;
-          // Auto-select first vehicle if available
           if (_userVehicles.isNotEmpty) {
             _selectedVehicle = _userVehicles.first;
             _selectedVehicleId =
@@ -202,8 +236,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           }
         });
       }
-
-      // Pre-fill contact info
       if (doc.exists) {
         final data = doc.data()!;
         _contactController.text = data['phone'] ?? '';
@@ -222,6 +254,19 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           await FirebaseFirestore.instance.collection('service_centers').get();
 
       List<Map<String, dynamic>> availableCenters = [];
+      final now = DateTime.now();
+      final currentDay =
+          [
+            'Sunday',
+            'Monday',
+            'Tuesday',
+            'Wednesday',
+            'Thursday',
+            'Friday',
+            'Saturday',
+          ][now.weekday % 7];
+
+      final currentTime = TimeOfDay.fromDateTime(now);
 
       for (var centerDoc in serviceCentersQuery.docs) {
         try {
@@ -234,110 +279,127 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
                   .doc(centerId)
                   .get();
 
-          if (towingDoc.exists) {
-            final towingData = towingDoc.data()!;
+          if (!towingDoc.exists) continue;
 
-            if (towingData.containsKey('towing')) {
-              final towingInfo = towingData['towing'] as Map<String, dynamic>?;
+          final towingData = towingDoc.data()!;
+          if (!towingData.containsKey('towing')) continue;
 
-              // Check if service center offers towing AND the specific selected service type
-              if (towingInfo != null &&
-                  towingInfo['offers'] == true &&
-                  _selectedTowingType != null) {
-                final offeredTypes = List<String>.from(
-                  towingInfo['types'] ?? [],
+          final towingInfo = towingData['towing'] as Map<String, dynamic>?;
+          if (towingInfo == null ||
+              towingInfo['offers'] != true ||
+              _selectedTowingType == null)
+            continue;
+
+          // Check towing schedule availability
+          bool isAvailable = false;
+          final schedule = List<Map<String, dynamic>>.from(
+            towingInfo['schedule'] ?? [],
+          );
+
+          for (final daySchedule in schedule) {
+            final day = daySchedule['day'];
+            final isClosed = daySchedule['isClosed'] ?? false;
+            final startHour = daySchedule['startHour'];
+            final endHour = daySchedule['endHour'];
+
+            if (day == currentDay && !isClosed) {
+              if (startHour != null && endHour != null) {
+                final startParts = startHour.split(':');
+                final endParts = endHour.split(':');
+                final start = TimeOfDay(
+                  hour: int.parse(startParts[0]),
+                  minute: int.parse(startParts[1]),
+                );
+                final end = TimeOfDay(
+                  hour: int.parse(endParts[0]),
+                  minute: int.parse(endParts[1]),
                 );
 
-                // Check if this service center offers the selected towing type
-                bool offersSelectedType = offeredTypes.any(
-                  (type) =>
-                      type.toLowerCase() == _selectedTowingType!.toLowerCase(),
-                );
+                // Convert TimeOfDay to minutes for easy comparison
+                int toMinutes(TimeOfDay t) => t.hour * 60 + t.minute;
 
-                if (offersSelectedType) {
-                  // Calculate distance if we have current position
-                  double? distance;
-                  if (_currentPosition != null) {
-                    // CORRECTED: Get coordinates from serviceCenterInfo at root level
-                    final serviceCenterInfo =
-                        centerData['serviceCenterInfo']
-                            as Map<String, dynamic>?;
-                    if (serviceCenterInfo != null) {
-                      final centerLat = serviceCenterInfo['latitude'];
-                      final centerLng = serviceCenterInfo['longitude'];
+                final currentMinutes = toMinutes(currentTime);
+                final startMinutes = toMinutes(start);
+                final endMinutes = toMinutes(end);
 
-                      if (centerLat != null && centerLng != null) {
-                        distance =
-                            Geolocator.distanceBetween(
-                              _currentPosition!.latitude,
-                              _currentPosition!.longitude,
-                              centerLat.toDouble(),
-                              centerLng.toDouble(),
-                            ) /
-                            1000; // Convert to kilometers
-
-                        // Round to 1 decimal place
-                        distance = double.parse(distance.toStringAsFixed(1));
-                        debugPrint(
-                          'Distance calculated: $distance km from user to ${serviceCenterInfo['name']}',
-                        );
-                      } else {
-                        debugPrint(
-                          'Service center coordinates missing for ${serviceCenterInfo['name']}',
-                        );
-                      }
-                    } else {
-                      debugPrint(
-                        'Service center info missing for center $centerId',
-                      );
-                    }
-                  } else {
-                    debugPrint(
-                      'Current position is null, cannot calculate distance',
-                    );
-                  }
-
-                  // Get service fee for the selected towing type
-                  double? serviceFee;
-                  final serviceFees = towingInfo['serviceFees'] as List? ?? [];
-                  final matchingFee = serviceFees.firstWhere(
-                    (fee) => fee['type'] == _selectedTowingType,
-                    orElse: () => {},
-                  );
-                  if (matchingFee.isNotEmpty && matchingFee['fee'] != null) {
-                    serviceFee = _safeParseDouble(matchingFee['fee']);
-                  }
-
-                  // Get service center info
-                  final serviceCenterInfo =
-                      centerData['serviceCenterInfo']
-                          as Map<String, dynamic>? ??
-                      {};
-
-                  availableCenters.add({
-                    'id': centerId,
-                    'name': serviceCenterInfo['name'] ?? 'Unknown',
-                    'address': _formatAddress(serviceCenterInfo['address']),
-                    'phone': serviceCenterInfo['serviceCenterPhoneNo'] ?? 'N/A',
-                    'distance': distance,
-                    'towingData': towingInfo,
-                    'serviceFee': serviceFee,
-                    'coordinates': {
-                      'latitude': serviceCenterInfo['latitude'],
-                      'longitude': serviceCenterInfo['longitude'],
-                    },
-                  });
+                if (endMinutes < startMinutes) {
+                  // Means the shift crosses midnight
+                  isAvailable = currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+                } else {
+                  isAvailable = currentMinutes >= startMinutes && currentMinutes <= endMinutes;
                 }
               }
             }
           }
+
+          if (!isAvailable) {
+            debugPrint(
+              'Skipping ${centerDoc.id}: Closed or outside operating hours.',
+            );
+            continue;
+          }
+
+          // Check if this service center offers the selected towing type
+          final offeredTypes = List<String>.from(towingInfo['types'] ?? []);
+          bool offersSelectedType = offeredTypes.any(
+            (type) => type.toLowerCase() == _selectedTowingType!.toLowerCase(),
+          );
+          if (!offersSelectedType) continue;
+
+          // Calculate distance
+          double? distance;
+          if (_currentPosition != null) {
+            final serviceCenterInfo =
+                centerData['serviceCenterInfo'] as Map<String, dynamic>?;
+
+            if (serviceCenterInfo != null &&
+                serviceCenterInfo['latitude'] != null &&
+                serviceCenterInfo['longitude'] != null) {
+              distance =
+                  Geolocator.distanceBetween(
+                    _currentPosition!.latitude,
+                    _currentPosition!.longitude,
+                    serviceCenterInfo['latitude'].toDouble(),
+                    serviceCenterInfo['longitude'].toDouble(),
+                  ) /
+                  1000;
+              distance = double.parse(distance.toStringAsFixed(1));
+            }
+          }
+
+          // Get service fee for the selected towing type
+          double? serviceFee;
+          final serviceFees = towingInfo['serviceFees'] as List? ?? [];
+          final matchingFee = serviceFees.firstWhere(
+            (fee) => fee['type'] == _selectedTowingType,
+            orElse: () => {},
+          );
+          if (matchingFee.isNotEmpty && matchingFee['fee'] != null) {
+            serviceFee = _safeParseDouble(matchingFee['fee']);
+          }
+
+          final serviceCenterInfo =
+              centerData['serviceCenterInfo'] as Map<String, dynamic>? ?? {};
+
+          availableCenters.add({
+            'id': centerId,
+            'name': serviceCenterInfo['name'] ?? 'Unknown',
+            'address': _formatAddress(serviceCenterInfo['address']),
+            'phone': serviceCenterInfo['serviceCenterPhoneNo'] ?? 'N/A',
+            'distance': distance,
+            'towingData': towingInfo,
+            'serviceFee': serviceFee,
+            'coordinates': {
+              'latitude': serviceCenterInfo['latitude'],
+              'longitude': serviceCenterInfo['longitude'],
+            },
+          });
         } catch (e) {
           debugPrint('Error processing center ${centerDoc.id}: $e');
           continue;
         }
       }
 
-      // Sort by distance if available
       availableCenters.sort((a, b) {
         final distA = a['distance'] ?? double.infinity;
         final distB = b['distance'] ?? double.infinity;
@@ -372,7 +434,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
   List<Map<String, dynamic>> _availableTowingTypes = [];
   bool _loadingTowingTypes = false;
 
-  // Replace the static _towingTypes with dynamic loading
   Future<void> _loadTowingServiceTypes() async {
     setState(() => _loadingTowingTypes = true);
 
@@ -404,7 +465,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
   IconData _mapServiceToIcon(String serviceName) {
     switch (serviceName.toLowerCase()) {
       case 'vehicle brakedown':
-      case 'vehicle breakdown':
         return Icons.car_crash;
       case 'flat tire / tire burst':
         return Icons.tire_repair;
@@ -426,7 +486,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
 
   Color _mapServiceToColor(String serviceName) {
     switch (serviceName.toLowerCase()) {
-      case 'vehicle brakedown':
       case 'vehicle breakdown':
         return Colors.red;
       case 'flat tire / tire burst':
@@ -469,7 +528,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
       double baseFee = 0.0;
       double perKmRate = 0.0;
 
-      // 1. Get base fee from serviceFees based on towing type
+      // base fee from serviceFees based on towing type
       final serviceFees = towingData['serviceFees'] as List? ?? [];
       final matchingService = serviceFees.firstWhere(
         (service) => service['type'] == _selectedTowingType,
@@ -480,7 +539,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
         baseFee = _safeParseDouble(matchingService['fee']);
       }
 
-      // 2. Get perKmRate from sizePricing based on vehicle size class
+      // perKmRate from sizePricing based on vehicle size class
       final sizePricing = towingData['sizePricing'] as List? ?? [];
       final vehicleSizeClass = _selectedVehicle!['sizeClass'] ?? 'Medium';
       final matchingSize = sizePricing.firstWhere(
@@ -492,16 +551,15 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
         perKmRate = _safeParseDouble(matchingSize['perKmRate']);
       }
 
-      // 3. Use actual distance from service center data, fallback to 10km if null
+      // actual distance from service center data, fallback to 10km if null
       double distanceInKm = _selectedServiceCenterData!['distance'] ?? 10.0;
 
-      // Update the _distanceInKm variable for use in other parts of the app
       _distanceInKm = distanceInKm;
 
       double distanceCost = distanceInKm * perKmRate;
       double totalCost = baseFee + distanceCost;
 
-      // 4. Apply luxury surcharge if applicable
+      // luxury surcharge if applicable
       final luxurySurcharge = towingData['luxurySurcharge'] as List? ?? [];
       final vehicleMake = _selectedVehicle!['make'];
       final luxuryMake = luxurySurcharge.firstWhere(
@@ -555,7 +613,8 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
     }
 
     try {
-      // Create towing request
+      final pricingData = await _calculatePricingData();
+
       final requestRef = await FirebaseFirestore.instance
           .collection('towing_requests')
           .add({
@@ -573,25 +632,86 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
               'year': _vehicleYear,
               'sizeClass': _vehicleSizeClass,
             },
-            'location':
-                _currentPosition != null
-                    ? {
-                      'latitude': _currentPosition!.latitude,
-                      'longitude': _currentPosition!.longitude,
-                      'address': _currentLocation,
-                    }
-                    : null,
+            'location': {
+              'customer':
+                  _currentPosition != null
+                      ? {
+                        'latitude': _currentPosition!.latitude,
+                        'longitude': _currentPosition!.longitude,
+                        'address': {
+                          'full': _currentLocation,
+                          'street': _currentStreet ?? '',
+                          'city': _currentCity ?? '',
+                          'state': _currentState ?? '',
+                          'postcode': _currentPostcode ?? '',
+                          'country': _currentCountry ?? '',
+                        },
+                      }
+                      : null,
+              'serviceCenter': _selectedServiceCenterData!['coordinates'],
+              'towingDriver': null,
+            },
+            'serviceCenterContact': {
+              'phone': _selectedServiceCenterData!['phone'],
+              'address': _selectedServiceCenterData!['address'],
+            },
+            'pricingBreakdown': {
+              'baseFee': pricingData['baseFee'],
+              'perKmRate': pricingData['perKmRate'],
+              'distanceInKm': pricingData['distanceInKm'],
+              'luxurySurcharge': pricingData['luxurySurcharge'],
+              'distanceCost':
+                  (pricingData['distanceInKm'] ?? 0.0) *
+                  (pricingData['perKmRate'] ?? 0.0),
+            },
+            'finalCost': null,
             'estimatedCost': _estimatedCost,
             'distance': _selectedServiceCenterData!['distance'],
-            'status': 'pending', // pending -> assigned -> ongoing -> completed
-            'driverId': null, // Will be assigned later
-            'driverInfo': null, // Will be filled when driver is assigned
+            'status': 'pending',
+            'driverId': null,
+            'driverInfo': null,
+            'timestamps': {
+              'requestedAt': FieldValue.serverTimestamp(),
+              'acceptedAt': null,
+              'dispatchedAt': null,
+              'driverAssignedAt': null,
+              'arrivedAtLocationAt': null,
+              'serviceStartedAt': null,
+              'completedAt': null,
+              'cancelledAt': null,
+            },
+            'coverageArea':
+                _selectedServiceCenterData!['towingData']['coverageKm'],
+            'responseTime':
+                _selectedServiceCenterData!['towingData']['responseTimeMins'],
+            'estimatedDuration': _calculateEstimatedDuration(
+              pricingData['distanceInKm'] ?? 0.0,
+            ),
             'createdAt': FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
+            'statusHistory': [
+              {
+                'status': 'pending',
+                'timestamp': Timestamp.now(),
+                'updatedBy': 'customer',
+                'notes': 'Request submitted',
+              },
+            ],
+            'payment': {
+              'status': 'unpaid',
+              'method': null,
+              'transactionId': null,
+              'paidAmount': null,
+              'paidAt': null,
+            },
+            'rating': {
+              'driverRating': null,
+              'serviceRating': null,
+              'comments': null,
+              'ratedAt': null,
+            },
           });
 
       if (mounted) {
-        // Navigate to request tracking page
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
@@ -614,8 +734,82 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
     }
   }
 
+  int _calculateEstimatedDuration(double distanceInKm) {
+    // Base time + travel time by assuming 40km/h average speed in traffic
+    const baseTime = 15; // minutes for preparation
+    final travelTime = (distanceInKm / 40 * 60).ceil(); // minutes
+    return baseTime + travelTime;
+  }
+
+  Future<Map<String, double>> _calculatePricingData() async {
+    if (_selectedServiceCenterData == null || _selectedVehicle == null) {
+      return {
+        'baseFee': 0.0,
+        'perKmRate': 0.0,
+        'distanceInKm': 0.0,
+        'luxurySurcharge': 0.0,
+      };
+    }
+
+    final towingData = _selectedServiceCenterData!['towingData'];
+    if (towingData == null) {
+      return {
+        'baseFee': 0.0,
+        'perKmRate': 0.0,
+        'distanceInKm': 0.0,
+        'luxurySurcharge': 0.0,
+      };
+    }
+
+    double baseFee = 0.0;
+    double perKmRate = 0.0;
+    double luxurySurcharge = 0.0;
+
+    // Get base fee from serviceFees
+    final serviceFees = towingData['serviceFees'] as List? ?? [];
+    final matchingService = serviceFees.firstWhere(
+      (service) => service['type'] == _selectedTowingType,
+      orElse: () => {},
+    );
+
+    if (matchingService.isNotEmpty && matchingService['fee'] != null) {
+      baseFee = _safeParseDouble(matchingService['fee']);
+    }
+
+    // Get perKmRate from sizePricing
+    final sizePricing = towingData['sizePricing'] as List? ?? [];
+    final vehicleSizeClass = _selectedVehicle!['sizeClass'] ?? 'Medium';
+    final matchingSize = sizePricing.firstWhere(
+      (pricing) => pricing['sizeClass'] == vehicleSizeClass,
+      orElse: () => {},
+    );
+
+    if (matchingSize.isNotEmpty && matchingSize['perKmRate'] != null) {
+      perKmRate = _safeParseDouble(matchingSize['perKmRate']);
+    }
+
+    // Get luxury surcharge
+    final luxurySurcharges = towingData['luxurySurcharge'] as List? ?? [];
+    final vehicleMake = _selectedVehicle!['make'];
+    final luxuryMake = luxurySurcharges.firstWhere(
+      (make) => make['make'] == vehicleMake,
+      orElse: () => {},
+    );
+
+    if (luxuryMake.isNotEmpty && luxuryMake['surcharge'] != null) {
+      luxurySurcharge = _safeParseDouble(luxuryMake['surcharge']);
+    }
+
+    return {
+      'baseFee': baseFee,
+      'perKmRate': perKmRate,
+      'distanceInKm': _distanceInKm ?? 0.0,
+      'luxurySurcharge': luxurySurcharge,
+    };
+  }
+
   Future<void> _makeEmergencyCall() async {
-    const url = 'tel:999'; // Malaysian emergency number
+    const url = 'tel:999';
     if (await canLaunch(url)) {
       await launch(url);
     }
@@ -660,10 +854,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           IconButton(
             icon: Container(
               padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
               child: const Icon(Icons.phone, color: Colors.red, size: 20),
             ),
             onPressed: _makeEmergencyCall,
@@ -778,7 +968,15 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           ),
           const SizedBox(height: 24),
 
-          if (_userVehicles.isEmpty)
+          if (loading)
+            Container(
+              height: MediaQuery.of(context).size.height * 0.5,
+              child: Center(
+                child:
+                    loading ? _buildLoadingState() : _buildEmptyVehicleState(),
+              ),
+            )
+          else if (_userVehicles.isEmpty)
             _buildEmptyVehicleState()
           else
             ..._userVehicles.map((vehicle) {
@@ -904,31 +1102,51 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
               );
             }).toList(),
 
-          const SizedBox(height: 32),
-          SizedBox(
-            width: double.infinity,
-            height: 50,
-            child: ElevatedButton(
-              onPressed:
-                  _selectedVehicle != null
-                      ? () => setState(() => _currentStep = 1)
-                      : null,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: primaryColor,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+          if (!loading && _userVehicles.isNotEmpty) ...[
+            const SizedBox(height: 32),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed:
+                    _selectedVehicle != null
+                        ? () => setState(() => _currentStep = 1)
+                        : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primaryColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 0,
                 ),
-                elevation: 0,
-              ),
-              child: const Text(
-                'Continue to Service Type',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                child: const Text(
+                  'Continue to Service Type',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _buildLoadingState() {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const CircularProgressIndicator(color: primaryColor),
+        const SizedBox(height: 16),
+        Text(
+          'Loading your vehicle(s) details...',
+          style: TextStyle(
+            color: secondaryColor,
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
     );
   }
 
@@ -979,54 +1197,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           ),
           const SizedBox(height: 24),
 
-          // Emergency banner
-          // Container(
-          //   padding: const EdgeInsets.all(16),
-          //   decoration: BoxDecoration(
-          //     color: Colors.red.shade50,
-          //     borderRadius: BorderRadius.circular(12),
-          //     border: Border.all(color: Colors.red.shade200),
-          //   ),
-          //   child: Row(
-          //     children: [
-          //       Icon(Icons.emergency, color: Colors.red.shade600, size: 24),
-          //       const SizedBox(width: 12),
-          //       Expanded(
-          //         child: Column(
-          //           crossAxisAlignment: CrossAxisAlignment.start,
-          //           children: [
-          //             Text(
-          //               'Emergency Assistance',
-          //               style: TextStyle(
-          //                 color: Colors.red.shade800,
-          //                 fontWeight: FontWeight.w600,
-          //                 fontSize: 14,
-          //               ),
-          //             ),
-          //             const SizedBox(height: 2),
-          //             Text(
-          //               'For immediate help, call emergency services',
-          //               style: TextStyle(
-          //                 color: Colors.red.shade700,
-          //                 fontSize: 12,
-          //               ),
-          //             ),
-          //           ],
-          //         ),
-          //       ),
-          //       TextButton(
-          //         onPressed: _makeEmergencyCall,
-          //         child: Text(
-          //           'Call',
-          //           style: TextStyle(color: Colors.red.shade700),
-          //         ),
-          //       ),
-          //     ],
-          //   ),
-          // ),
-          //
-          // const SizedBox(height: 24),
-
           // Loading state for towing types
           if (_loadingTowingTypes)
             const Center(child: CircularProgressIndicator(color: primaryColor)),
@@ -1054,7 +1224,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
                   child: InkWell(
                     borderRadius: BorderRadius.circular(16),
                     onTap: () async {
-                      await _ensureLocationAvailable(); // Ensure location is available
+                      await _ensureLocationAvailable();
                       setState(() {
                         _selectedTowingType = towingType['title'];
                       });
@@ -1187,21 +1357,52 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
               // Add current location display
               if (_currentLocation != null) ...[
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Icon(Icons.location_on, size: 16, color: primaryColor),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        'Your location: $_currentLocation',
-                        style: TextStyle(
-                          color: Colors.grey.shade600,
-                          fontSize: 14,
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.location_on_rounded,
+                          color: primaryColor,
+                          size: 20,
                         ),
-                        softWrap: true,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Your Location',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _currentLocation ?? 'Fetching location...',
+                              style: TextStyle(
+                                color: Colors.grey.shade700,
+                                fontSize: 13.5,
+                                height: 1.4,
+                              ),
+                              softWrap: true,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ],
@@ -1242,7 +1443,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'No service centers offer $_selectedTowingType in your area',
+                          'No centers available for $_selectedTowingType at the moment — some might be closed.',
                           style: TextStyle(color: Colors.grey.shade600),
                           textAlign: TextAlign.center,
                         ),
@@ -1466,7 +1667,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
                                     ),
                                   ],
 
-                                  // Estimated Cost (when selected)
+                                  // Estimated Cost
                                   if (isSelected && _estimatedCost != null) ...[
                                     const SizedBox(height: 12),
                                     Container(
@@ -1570,27 +1771,28 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
                 ),
               ),
               const SizedBox(width: 16),
-              Expanded(
-                child: ElevatedButton(
-                  onPressed:
-                      _selectedServiceCenter != null
-                          ? () => setState(() => _currentStep = 3)
-                          : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+              if (_availableServiceCenters.isNotEmpty) ...[
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _selectedServiceCenter != null
+                        ? () => setState(() => _currentStep = 3)
+                        : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryColor,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      elevation: 0,
                     ),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    elevation: 0,
+                    child: const Text('Continue'),
                   ),
-                  child: const Text('Continue'),
                 ),
-              ),
+              ],
             ],
           ),
-        ),
+        )
       ],
     );
   }
@@ -2101,8 +2303,8 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
     }
 
     double distanceCost = distanceInKm * perKmRate;
-    double subtotal = baseFee + distanceCost;
-    double total = subtotal + luxurySurcharge;
+    double subtotal = baseFee + distanceCost + luxurySurcharge;
+    double total = subtotal;
 
     return Column(
       children: [
@@ -2137,7 +2339,7 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
             ],
           ),
 
-        // Subtotal (only show if there are multiple items)
+        // Subtotal only show if there are multiple items
         if (perKmRate > 0 || luxurySurcharge > 0)
           Column(
             children: [
@@ -2195,512 +2397,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
           ),
         ),
       ],
-    );
-  }
-}
-
-// Towing Request Tracking Page
-class TowingRequestTrackingPage extends StatefulWidget {
-  final String requestId;
-  final String userId;
-
-  const TowingRequestTrackingPage({
-    super.key,
-    required this.requestId,
-    required this.userId,
-  });
-
-  @override
-  State<TowingRequestTrackingPage> createState() =>
-      _TowingRequestTrackingPageState();
-}
-
-class _TowingRequestTrackingPageState extends State<TowingRequestTrackingPage> {
-  static const Color primaryColor = Color(0xFFFF6B00);
-  static const Color secondaryColor = Color(0xFF1F2A44);
-  static const Color backgroundColor = Color(0xFFF8FAFC);
-  static const Color cardColor = Colors.white;
-
-  Map<String, dynamic>? _requestData;
-  Map<String, dynamic>? _driverData;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadRequestData();
-    _listenToRequestUpdates();
-  }
-
-  Future<void> _loadRequestData() async {
-    try {
-      final requestDoc =
-          await FirebaseFirestore.instance
-              .collection('towing_requests')
-              .doc(widget.requestId)
-              .get();
-
-      if (requestDoc.exists) {
-        setState(() {
-          _requestData = requestDoc.data()!;
-        });
-
-        // Load driver data if assigned
-        if (_requestData!['driverId'] != null) {
-          await _loadDriverData(_requestData!['driverId']);
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading request data: $e');
-    } finally {
-      setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _loadDriverData(String driverId) async {
-    try {
-      final driverDoc =
-          await FirebaseFirestore.instance
-              .collection('drivers')
-              .doc(driverId)
-              .get();
-
-      if (driverDoc.exists) {
-        setState(() {
-          _driverData = driverDoc.data()!;
-        });
-      }
-    } catch (e) {
-      debugPrint('Error loading driver data: $e');
-    }
-  }
-
-  void _listenToRequestUpdates() {
-    FirebaseFirestore.instance
-        .collection('towing_requests')
-        .doc(widget.requestId)
-        .snapshots()
-        .listen((snapshot) {
-          if (snapshot.exists) {
-            setState(() {
-              _requestData = snapshot.data()!;
-            });
-
-            // Load driver data if newly assigned
-            if (_requestData!['driverId'] != null && _driverData == null) {
-              _loadDriverData(_requestData!['driverId']);
-            }
-          }
-        });
-  }
-
-  String _getStatusMessage(String status) {
-    switch (status) {
-      case 'pending':
-        return 'Looking for available driver...';
-      case 'assigned':
-        return 'Driver assigned and on the way';
-      case 'ongoing':
-        return 'Driver has arrived at your location';
-      case 'completed':
-        return 'Towing service completed';
-      case 'cancelled':
-        return 'Request cancelled';
-      default:
-        return 'Status unknown';
-    }
-  }
-
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'pending':
-        return Colors.orange;
-      case 'assigned':
-        return Colors.blue;
-      case 'ongoing':
-        return primaryColor;
-      case 'completed':
-        return Colors.green;
-      case 'cancelled':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
-  }
-
-  Future<void> _makeCall(String phoneNumber) async {
-    final url = 'tel:$phoneNumber';
-    if (await canLaunch(url)) {
-      await launch(url);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_loading) {
-      return Scaffold(
-        backgroundColor: backgroundColor,
-        body: const Center(
-          child: CircularProgressIndicator(color: primaryColor),
-        ),
-      );
-    }
-
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: cardColor,
-        surfaceTintColor: Colors.transparent,
-        title: const Text(
-          'Towing Request Status',
-          style: TextStyle(
-            color: secondaryColor,
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: secondaryColor),
-          onPressed:
-              () => Navigator.of(context).popUntil((route) => route.isFirst),
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Status Card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    _getStatusColor(_requestData!['status']),
-                    _getStatusColor(_requestData!['status']).withOpacity(0.8),
-                  ],
-                ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: _getStatusColor(
-                      _requestData!['status'],
-                    ).withOpacity(0.3),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Column(
-                children: [
-                  Icon(
-                    _requestData!['status'] == 'completed'
-                        ? Icons.check_circle
-                        : Icons.local_shipping,
-                    color: Colors.white,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    _getStatusMessage(_requestData!['status']),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Request ID: ${widget.requestId.substring(0, 8).toUpperCase()}',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.9),
-                      fontSize: 14,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            // Driver Information (if assigned)
-            if (_driverData != null) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: cardColor,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.05),
-                      blurRadius: 10,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Driver Information',
-                      style: TextStyle(
-                        color: secondaryColor,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Container(
-                          width: 60,
-                          height: 60,
-                          decoration: BoxDecoration(
-                            color: primaryColor.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                          child: const Icon(
-                            Icons.person,
-                            color: primaryColor,
-                            size: 30,
-                          ),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _driverData!['name'],
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Text(
-                                '${_driverData!['make']} ${_driverData!['model']}',
-                                style: TextStyle(
-                                  color: Colors.grey.shade600,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              Text(
-                                _driverData!['carPlate'],
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => _makeCall(_driverData!['phoneNo']),
-                          icon: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade50,
-                              borderRadius: BorderRadius.circular(25),
-                            ),
-                            child: const Icon(
-                              Icons.phone,
-                              color: Colors.green,
-                              size: 20,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 20),
-            ],
-
-            // Request Details
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: cardColor,
-                borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
-                    blurRadius: 10,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Request Details',
-                    style: TextStyle(
-                      color: secondaryColor,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  _buildDetailRow('Service Type', _requestData!['towingType']),
-                  _buildDetailRow(
-                    'Service Center',
-                    _requestData!['serviceCenterName'],
-                  ),
-                  if (_requestData!['estimatedCost'] != null)
-                    _buildDetailRow(
-                      'Estimated Cost',
-                      'RM ${_requestData!['estimatedCost'].toStringAsFixed(2)}',
-                    ),
-                  if (_requestData!['location']?['address'] != null)
-                    _buildDetailRow(
-                      'Location',
-                      _requestData!['location']['address'],
-                    ),
-                  if (_requestData!['description']?.isNotEmpty == true)
-                    _buildDetailRow(
-                      'Description',
-                      _requestData!['description'],
-                    ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 32),
-
-            // Action buttons based on status
-            if (_requestData!['status'] == 'pending') ...[
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: OutlinedButton(
-                  onPressed: () => _cancelRequest(),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Cancel Request'),
-                ),
-              ),
-            ],
-
-            if (_requestData!['status'] == 'completed') ...[
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: () => _showRatingDialog(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text('Rate Service'),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDetailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 100,
-            child: Text(
-              '$label:',
-              style: TextStyle(
-                color: Colors.grey.shade600,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                color: secondaryColor,
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _cancelRequest() {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Cancel Request'),
-            content: const Text(
-              'Are you sure you want to cancel this towing request?',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('No'),
-              ),
-              TextButton(
-                onPressed: () async {
-                  try {
-                    await FirebaseFirestore.instance
-                        .collection('towing_requests')
-                        .doc(widget.requestId)
-                        .update({
-                          'status': 'cancelled',
-                          'updatedAt': FieldValue.serverTimestamp(),
-                        });
-                    Navigator.pop(context);
-                  } catch (e) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Failed to cancel request')),
-                    );
-                  }
-                },
-                child: const Text('Yes, Cancel'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  void _showRatingDialog() {
-    // Implement rating dialog
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Rate Your Experience'),
-            content: const Text('Rating feature coming soon!'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
-              ),
-            ],
-          ),
     );
   }
 }

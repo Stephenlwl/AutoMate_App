@@ -7,7 +7,6 @@ import 'dart:io';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:automate_application/pages/my_vehicles/edit_vehicle_page.dart';
 
-// Vehicle Detail Page
 class VehicleDetailPage extends StatelessWidget {
   final Map<String, dynamic> vehicleData;
   final VoidCallback onStatusUpdated;
@@ -47,17 +46,14 @@ class VehicleDetailPage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // User Information Card
             _buildUserInfoCard(userInfo),
 
             const SizedBox(height: 16),
 
-            // Vehicle Information Card
             _buildVehicleInfoCard(vehicle),
 
             const SizedBox(height: 16),
 
-            // Service Maintenance Card
             _buildServiceMaintenanceCard(vehicle),
           ],
         ),
@@ -493,6 +489,8 @@ class VehicleDetailPage extends StatelessWidget {
       'brake_fluid': 'Brake Fluid Change',
       'air_filter': 'Air Filter Replacement',
       'coolant': 'Coolant Flush',
+      'gear_oil': 'Gear Oil',
+      'at_fluid': 'AT Fluid',
     };
     return displayNames[serviceType] ?? serviceType.replaceAll('_', ' ').toUpperCase();
   }

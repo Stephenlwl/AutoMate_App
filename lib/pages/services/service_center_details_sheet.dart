@@ -1002,7 +1002,6 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
             ),
           ),
 
-          // Action Buttons - Updated to include Chat button
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -1011,7 +1010,6 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
             ),
             child: Column(
               children: [
-                // Top row with Call, Chat, and Directions
                 Row(
                   children: [
                     Expanded(
@@ -1106,7 +1104,6 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
 
                 const SizedBox(height: 12),
 
-                // Bottom row with Book Service button (full width)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -1325,7 +1322,7 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
                   Column(
                     children: [
                       Text(
-                        _currentRating.toStringAsFixed(1), // Use local state
+                        _currentRating.toStringAsFixed(1),
                         style: TextStyle(
                           fontSize: 36,
                           fontWeight: FontWeight.bold,
@@ -1335,9 +1332,9 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
                       _buildStarRating(
                         _currentRating,
                         size: 20,
-                      ), // Use local state
+                      ),
                       Text(
-                        '$_currentReviewCount reviews', // Use local state
+                        '$_currentReviewCount reviews',
                         style: TextStyle(
                           color: AppColors.textSecondary,
                           fontSize: 14,
@@ -1567,7 +1564,7 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
               ],
             ),
 
-          // Service Details - Show actual services used
+          // Service Details show actual services used
           if (review.services != null && review.services!.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(8),

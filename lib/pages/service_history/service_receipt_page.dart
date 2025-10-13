@@ -5,22 +5,40 @@ import 'package:printing/printing.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
-class ServiceInvoicePage extends StatefulWidget {
-  final String invoiceId;
+class AppColors {
+  static const Color primaryColor = Color(0xFFFF6B00);
+  static const Color primaryLight = Color(0xFFF3A169);
+  static const Color primaryDark = Color(0xFF1D4ED8);
+  static const Color secondaryColor = Color(0xFF1E293B);
+  static const Color backgroundColor = Color(0xFFF8FAFC);
+  static const Color cardColor = Colors.white;
+  static const Color surfaceColor = Color(0xFFF1F5F9);
+  static const Color accentColor = Color(0xFF06B6D4);
+  static const Color successColor = Color(0xFF10B981);
+  static const Color warningColor = Color(0xFFF59E0B);
+  static const Color errorColor = Color(0xFFEF4444);
+  static const Color textPrimary = Color(0xFF0F172A);
+  static const Color textSecondary = Color(0xFF64748B);
+  static const Color textMuted = Color(0xFF94A3B8);
+  static const Color borderColor = Color(0xFFE2E8F0);
+}
+
+class ServiceReceiptPage extends StatefulWidget {
+  final String receiptId;
   final String serviceBookingId;
 
-  const ServiceInvoicePage({
+  const ServiceReceiptPage({
     Key? key,
-    required this.invoiceId,
+    required this.receiptId,
     this.serviceBookingId = '',
   }) : super(key: key);
 
   @override
-  _ServiceInvoicePageState createState() => _ServiceInvoicePageState();
+  _ServiceReceiptPageState createState() => _ServiceReceiptPageState();
 }
 
-class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
-  Map<String, dynamic>? invoiceData;
+class _ServiceReceiptPageState extends State<ServiceReceiptPage> {
+  Map<String, dynamic>? receiptData;
   Map<String, dynamic>? serviceCenterData;
   bool isLoading = true;
   bool isPrinting = false;
@@ -28,20 +46,21 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   @override
   void initState() {
     super.initState();
-    _loadInvoiceData();
+    _loadReceiptData();
   }
 
-  Future<void> _loadInvoiceData() async {
+  Future<void> _loadReceiptData() async {
     try {
-      DocumentSnapshot invoiceSnapshot = await FirebaseFirestore.instance
-          .collection('service_invoice')
-          .doc(widget.invoiceId)
-          .get();
+      DocumentSnapshot receiptSnapshot =
+          await FirebaseFirestore.instance
+              .collection('service_receipts')
+              .doc(widget.receiptId)
+              .get();
 
-      if (invoiceSnapshot.exists) {
-        final data = invoiceSnapshot.data() as Map<String, dynamic>? ?? {};
+      if (receiptSnapshot.exists) {
+        final data = receiptSnapshot.data() as Map<String, dynamic>;
         setState(() {
-          invoiceData = data;
+          receiptData = data;
         });
         await _loadServiceCenterData(data['serviceCenterId']);
       } else {
@@ -50,7 +69,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         });
       }
     } catch (error) {
-      print('Error loading invoice: $error');
+      print('Error loading receipt: $error');
       setState(() {
         isLoading = false;
       });
@@ -59,14 +78,16 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
 
   Future<void> _loadServiceCenterData(String serviceCenterId) async {
     try {
-      DocumentSnapshot serviceCenterSnapshot = await FirebaseFirestore.instance
-          .collection('service_centers')
-          .doc(serviceCenterId)
-          .get();
+      DocumentSnapshot serviceCenterSnapshot =
+          await FirebaseFirestore.instance
+              .collection('service_centers')
+              .doc(serviceCenterId)
+              .get();
 
       if (serviceCenterSnapshot.exists) {
         setState(() {
-          serviceCenterData = serviceCenterSnapshot.data() as Map<String, dynamic>;
+          serviceCenterData =
+              serviceCenterSnapshot.data() as Map<String, dynamic>;
           isLoading = false;
         });
       } else {
@@ -82,7 +103,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     }
   }
 
-  // Helper methods
   String _getServiceCenterInfo(String key) {
     if (serviceCenterData == null) return 'N/A';
 
@@ -103,23 +123,6 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     if (directValue != null) return directValue.toString();
 
     return 'N/A';
-  }
-
-  String _formatDate(dynamic timestamp) {
-    if (timestamp == null) return 'N/A';
-    try {
-      DateTime date;
-      if (timestamp is Timestamp) {
-        date = timestamp.toDate();
-      } else if (timestamp is String) {
-        date = DateTime.parse(timestamp);
-      } else {
-        return 'Invalid Date';
-      }
-      return DateFormat('dd MMM yyyy').format(date);
-    } catch (e) {
-      return 'Invalid Date';
-    }
   }
 
   String _getFormattedAddress() {
@@ -151,9 +154,9 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   List<Map<String, dynamic>> _getLabourItems() {
     try {
       final allServices = [
-        ...(invoiceData?['bookedServices'] ?? []),
-        ...(invoiceData?['packageServices'] ?? []),
-        ...(invoiceData?['additionalServices'] ?? []),
+        ...(receiptData?['bookedServices'] ?? []),
+        ...(receiptData?['packageServices'] ?? []),
+        ...(receiptData?['additionalServices'] ?? []),
       ];
 
       List<Map<String, dynamic>> labourItems = [];
@@ -164,7 +167,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           if (labourPrice > 0) {
             labourItems.add({
               'description':
-              service['serviceName'] ?? service['packageName'] ?? 'Service',
+                  service['serviceName'] ?? service['packageName'] ?? 'Service',
               'quantity': 1,
               'unitPrice': labourPrice,
               'amount': labourPrice,
@@ -183,13 +186,13 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   List<Map<String, dynamic>> _getPartsItems() {
     try {
       final parts = [
-        ...(invoiceData?['usedParts'] ?? []),
-        ...(invoiceData?['standaloneParts'] ?? []),
+        ...(receiptData?['usedParts'] ?? []),
+        ...(receiptData?['standaloneParts'] ?? []),
       ];
       final allServices = [
-        ...(invoiceData?['bookedServices'] ?? []),
-        ...(invoiceData?['packageServices'] ?? []),
-        ...(invoiceData?['additionalServices'] ?? []),
+        ...(receiptData?['bookedServices'] ?? []),
+        ...(receiptData?['packageServices'] ?? []),
+        ...(receiptData?['additionalServices'] ?? []),
       ];
 
       List<Map<String, dynamic>> partsItems = [];
@@ -246,72 +249,101 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     }
   }
 
-  double _getLabourSubtotal() {
-    return _getLabourItems().fold(
-      0.0,
-          (sum, item) {
-        final amount = item['amount'];
-        if (amount == null) return sum;
+  int _getTotalServices() {
+    try {
+      return _getLabourItems().length;
+    } catch (e) {
+      print('Error in _getTotalServices: $e');
+      return 0;
+    }
+  }
 
-        // Safely convert to double
-        if (amount is int) {
-          return sum + amount.toDouble();
-        } else if (amount is double) {
-          return sum + amount;
-        } else if (amount is String) {
-          return sum + (double.tryParse(amount) ?? 0.0);
-        }
-        return sum;
-      },
-    );
+  int _getTotalParts() {
+    try {
+      return _getPartsItems().length;
+    } catch (e) {
+      print('Error in _getTotalParts: $e');
+      return 0;
+    }
+  }
+
+  String _getPaymentMethodDisplay(String? method) {
+    switch (method?.toLowerCase()) {
+      case 'cash':
+        return 'CASH';
+      case 'card':
+        return 'CARD';
+      case 'online':
+        return 'ONLINE TRANSFER';
+      case 'touchngo':
+        return 'Touch \'n Go';
+      case 'boost':
+        return 'Boost';
+      case 'grabpay':
+        return 'GrabPay';
+      default:
+        return method?.toUpperCase() ?? 'N/A';
+    }
+  }
+
+  String _getPaymentStatusDisplay(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'paid':
+        return 'PAID';
+      case 'pending':
+        return 'PENDING';
+      case 'failed':
+        return 'FAILED';
+      case 'unpaid':
+        return 'UNPAID';
+      default:
+        return status?.toUpperCase() ?? 'N/A';
+    }
+  }
+
+  double _getLabourSubtotal() {
+    return receiptData?['labourSubtotal']?.toDouble() ??
+        _getLabourItems().fold(
+          0.0,
+          (sum, item) => sum + (item['amount'] as double),
+        );
   }
 
   double _getPartsSubtotal() {
-    return _getPartsItems().fold(
-      0.0,
-          (sum, item) {
-        final amount = item['amount'];
-        if (amount == null) return sum;
-
-        // Safely convert to double
-        if (amount is int) {
-          return sum + amount.toDouble();
-        } else if (amount is double) {
-          return sum + amount;
-        } else if (amount is String) {
-          return sum + (double.tryParse(amount) ?? 0.0);
-        }
-        return sum;
-      },
-    );
+    return receiptData?['partsSubtotal']?.toDouble() ??
+        _getPartsItems().fold(
+          0.0,
+          (sum, item) => sum + (item['amount'] as double),
+        );
   }
 
   double _getSubtotal() {
-    return _getLabourSubtotal() + _getPartsSubtotal();
+    return receiptData?['subtotal']?.toDouble() ??
+        _getLabourSubtotal() + _getPartsSubtotal();
   }
 
   double _getTaxAmount() {
-    final payment = invoiceData?['payment'] ?? {};
-    final subtotal = _getSubtotal();
-    final total = (payment['total'] ?? 0).toDouble();
-    return total - subtotal;
+    return receiptData?['taxAmount']?.toDouble() ?? 0.0;
   }
 
   double _getTotalAmount() {
-    final payment = invoiceData?['payment'] ?? {};
-    final total = payment['total'];
+    return receiptData?['totalAmount']?.toDouble() ?? 0.0;
+  }
 
-    if (total == null) return 0.0;
+  double _getAmountPaid() {
+    return receiptData?['amountPaid']?.toDouble() ?? _getTotalAmount();
+  }
 
-    // Safely convert to double
-    if (total is int) {
-      return total.toDouble();
-    } else if (total is double) {
-      return total;
-    } else if (total is String) {
-      return double.tryParse(total) ?? 0.0;
-    }
-    return 0.0;
+  double _getChangeAmount() {
+    final amountPaid = _getAmountPaid();
+    final totalAmount = _getTotalAmount();
+    return amountPaid > totalAmount ? amountPaid - totalAmount : 0.0;
+  }
+
+  double _getBalanceDue() {
+    final amountPaid = _getAmountPaid();
+    final totalAmount = _getTotalAmount();
+    return amountPaid < totalAmount ? totalAmount - amountPaid : 0.0;
   }
 
   String _formatDateTime(dynamic timestamp) {
@@ -331,14 +363,31 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     }
   }
 
+  String _formatTime(dynamic timestamp) {
+    if (timestamp == null) return 'N/A';
+    try {
+      DateTime date;
+      if (timestamp is Timestamp) {
+        date = timestamp.toDate();
+      } else if (timestamp is String) {
+        date = DateTime.parse(timestamp);
+      } else {
+        return 'Invalid Time';
+      }
+      return DateFormat('hh:mm a').format(date);
+    } catch (e) {
+      return 'Invalid Time';
+    }
+  }
+
   String _formatPrice(dynamic price) {
     if (price == null) return '0.00';
     final amount = price is int ? price.toDouble() : price;
     return NumberFormat('#,##0.00').format(amount);
   }
 
-  // PDF Generation
-  void _printInvoice() async {
+  // PDF Printing
+  void _printReceipt() async {
     setState(() {
       isPrinting = true;
     });
@@ -347,7 +396,9 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
       await _generatePdf();
     } catch (e) {
       print('Print error: $e');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Printing failed: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Printing failed: $e')));
     } finally {
       setState(() {
         isPrinting = false;
@@ -384,13 +435,15 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         children: [
           _buildPdfHeader(),
           pw.SizedBox(height: 8),
-          _buildPdfInvoiceDetails(),
+          _buildPdfReceiptDetails(),
           pw.SizedBox(height: 8),
           _buildPdfCustomerVehicleInfo(),
           pw.SizedBox(height: 8),
           _buildPdfServicesTable(),
           pw.SizedBox(height: 8),
           _buildPdfTotals(),
+          pw.SizedBox(height: 8),
+          _buildPdfPaymentInfo(),
           pw.SizedBox(height: 8),
           _buildPdfFooter(),
         ],
@@ -422,7 +475,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
-  pw.Widget _buildPdfInvoiceDetails() {
+  pw.Widget _buildPdfReceiptDetails() {
     return pw.Row(
       mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
       children: [
@@ -430,11 +483,11 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
             pw.Text(
-              'INVOICE NO: ${invoiceData?['invoiceId'] ?? invoiceData?['id'] ?? ''}',
+              'RECEIPT NO: ${receiptData?['receiptId'] ?? receiptData?['id'] ?? ''}',
               style: pw.TextStyle(fontSize: 8),
             ),
             pw.Text(
-              'BOOKING NO: ${invoiceData?['serviceBookingId'] ?? ''}',
+              'INVOICE NO: ${receiptData?['invoiceId'] ?? ''}',
               style: pw.TextStyle(fontSize: 8),
             ),
           ],
@@ -443,7 +496,11 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           crossAxisAlignment: pw.CrossAxisAlignment.end,
           children: [
             pw.Text(
-              'DATE ISSUED: ${_formatDateTime(invoiceData?['createdAt'])}',
+              'DATE ISSUED: ${_formatDateTime(receiptData?['issuedAt'])}',
+              style: pw.TextStyle(fontSize: 8),
+            ),
+            pw.Text(
+              'BOOKING NO: ${receiptData?['serviceBookingId'] ?? ''}',
               style: pw.TextStyle(fontSize: 8),
             ),
           ],
@@ -453,8 +510,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   }
 
   pw.Widget _buildPdfCustomerVehicleInfo() {
-    final customerInfo = invoiceData?['customerInfo'] ?? {};
-    final vehicleInfo = invoiceData?['vehicleInfo'] ?? {};
+    final customerInfo = receiptData?['customerInfo'] ?? {};
+    final vehicleInfo = receiptData?['vehicleInfo'] ?? {};
 
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -539,31 +596,31 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           ...labourItems
               .map(
                 (item) => pw.Row(
-              children: [
-                pw.Expanded(
-                  flex: 3,
-                  child: pw.Text(
-                    item['description'],
-                    style: pw.TextStyle(fontSize: 8),
-                  ),
+                  children: [
+                    pw.Expanded(
+                      flex: 3,
+                      child: pw.Text(
+                        item['description'],
+                        style: pw.TextStyle(fontSize: 8),
+                      ),
+                    ),
+                    pw.Expanded(
+                      child: pw.Text(
+                        '${item['quantity']}',
+                        style: pw.TextStyle(fontSize: 8),
+                        textAlign: pw.TextAlign.center,
+                      ),
+                    ),
+                    pw.Expanded(
+                      child: pw.Text(
+                        _formatPrice(item['amount']),
+                        style: pw.TextStyle(fontSize: 8),
+                        textAlign: pw.TextAlign.right,
+                      ),
+                    ),
+                  ],
                 ),
-                pw.Expanded(
-                  child: pw.Text(
-                    '${item['quantity']}',
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.center,
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    _formatPrice(item['amount']),
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.right,
-                  ),
-                ),
-              ],
-            ),
-          )
+              )
               .toList(),
           pw.SizedBox(height: 4),
         ],
@@ -584,31 +641,31 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           ...partsItems
               .map(
                 (item) => pw.Row(
-              children: [
-                pw.Expanded(
-                  flex: 3,
-                  child: pw.Text(
-                    item['description'],
-                    style: pw.TextStyle(fontSize: 8),
-                  ),
+                  children: [
+                    pw.Expanded(
+                      flex: 3,
+                      child: pw.Text(
+                        item['description'],
+                        style: pw.TextStyle(fontSize: 8),
+                      ),
+                    ),
+                    pw.Expanded(
+                      child: pw.Text(
+                        '${item['quantity']}',
+                        style: pw.TextStyle(fontSize: 8),
+                        textAlign: pw.TextAlign.center,
+                      ),
+                    ),
+                    pw.Expanded(
+                      child: pw.Text(
+                        _formatPrice(item['amount']),
+                        style: pw.TextStyle(fontSize: 8),
+                        textAlign: pw.TextAlign.right,
+                      ),
+                    ),
+                  ],
                 ),
-                pw.Expanded(
-                  child: pw.Text(
-                    '${item['quantity']}',
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.center,
-                  ),
-                ),
-                pw.Expanded(
-                  child: pw.Text(
-                    _formatPrice(item['amount']),
-                    style: pw.TextStyle(fontSize: 8),
-                    textAlign: pw.TextAlign.right,
-                  ),
-                ),
-              ],
-            ),
-          )
+              )
               .toList(),
         ],
         pw.Divider(thickness: 0.5),
@@ -625,18 +682,30 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         if (_getTaxAmount() > 0)
           _buildPdfTotalRow('SST (8%):', _getTaxAmount(), isTax: true),
         _buildPdfTotalRow('TOTAL AMOUNT:', _getTotalAmount(), isTotal: true),
+        _buildPdfTotalRow('AMOUNT PAID:', _getAmountPaid(), isPaid: true),
+        if (_getChangeAmount() > 0)
+          _buildPdfTotalRow(
+            'CHANGE AMOUNT:',
+            _getChangeAmount(),
+            isChange: true,
+          ),
+        if (_getBalanceDue() > 0)
+          _buildPdfTotalRow('BALANCE DUE:', _getBalanceDue(), isBalance: true),
         pw.Divider(thickness: 0.5),
       ],
     );
   }
 
   pw.Widget _buildPdfTotalRow(
-      String label,
-      double amount, {
-        bool isBold = false,
-        bool isTotal = false,
-        bool isTax = false,
-      }) {
+    String label,
+    double amount, {
+    bool isBold = false,
+    bool isTotal = false,
+    bool isTax = false,
+    bool isPaid = false,
+    bool isChange = false,
+    bool isBalance = false,
+  }) {
     return pw.Padding(
       padding: pw.EdgeInsets.symmetric(vertical: 1),
       child: pw.Row(
@@ -647,7 +716,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             style: pw.TextStyle(
               fontSize: 8,
               fontWeight:
-              isBold || isTotal ? pw.FontWeight.bold : pw.FontWeight.normal,
+                  isBold || isTotal ? pw.FontWeight.bold : pw.FontWeight.normal,
             ),
           ),
           pw.Text(
@@ -655,7 +724,14 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             style: pw.TextStyle(
               fontSize: isTotal ? 10 : 8,
               fontWeight: pw.FontWeight.bold,
-              color: isTax ? PdfColors.red : (isTotal ? PdfColors.green : PdfColors.black),
+              color:
+                  isTax
+                      ? PdfColors.red
+                      : (isTotal
+                          ? PdfColors.green
+                          : (isPaid
+                              ? PdfColors.blue
+                              : (isBalance ? PdfColors.red : PdfColors.black))),
             ),
           ),
         ],
@@ -663,11 +739,68 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
+  pw.Widget _buildPdfPaymentInfo() {
+    final payment = receiptData?['payment'] ?? {};
+
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          'PAYMENT INFORMATION',
+          style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 2),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text('Payment Method:', style: pw.TextStyle(fontSize: 8)),
+            pw.Text(
+              _getPaymentMethodDisplay(payment['method']),
+              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            ),
+          ],
+        ),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text('Status:', style: pw.TextStyle(fontSize: 8)),
+            pw.Text(
+              _getPaymentStatusDisplay(receiptData?['status']),
+              style: pw.TextStyle(
+                fontSize: 8,
+                fontWeight: pw.FontWeight.bold,
+                color: PdfColors.green,
+              ),
+            ),
+          ],
+        ),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text('Paid At:', style: pw.TextStyle(fontSize: 8)),
+            pw.Text(
+              _formatTime(payment['paidAt']),
+              style: pw.TextStyle(fontSize: 8),
+            ),
+          ],
+        ),
+        if (payment['transactionId'] != null) ...[
+          pw.SizedBox(height: 2),
+          pw.Text(
+            'Transaction ID: ${payment['transactionId']}',
+            style: pw.TextStyle(fontSize: 7),
+          ),
+        ],
+        pw.Divider(thickness: 0.5),
+      ],
+    );
+  }
+
   pw.Widget _buildPdfFooter() {
     return pw.Column(
       children: [
         pw.Text(
-          '** OFFICIAL INVOICE - PLEASE PAY BEFORE SERVICE **',
+          '** OFFICIAL RECEIPT - PLEASE RETAIN FOR YOUR RECORDS **',
           style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
           textAlign: pw.TextAlign.center,
         ),
@@ -682,12 +815,36 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           style: pw.TextStyle(fontSize: 7),
           textAlign: pw.TextAlign.center,
         ),
+        pw.SizedBox(height: 8),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+          children: [
+            pw.Column(
+              children: [
+                pw.Container(width: 60, height: 1, color: PdfColors.black),
+                pw.Text(
+                  'Customer\'s Signature',
+                  style: pw.TextStyle(fontSize: 7),
+                ),
+              ],
+            ),
+            pw.Column(
+              children: [
+                pw.Container(width: 60, height: 1, color: PdfColors.black),
+                pw.Text(
+                  'Authorized Signature',
+                  style: pw.TextStyle(fontSize: 7),
+                ),
+              ],
+            ),
+          ],
+        ),
       ],
     );
   }
 
-  // Mobile UI Widgets - Matching Receipt Style
-  Widget _buildInvoiceHeader() {
+  // Mobile UI Widgets
+  Widget _buildReceiptHeader() {
     return Card(
       margin: EdgeInsets.all(16),
       child: Container(
@@ -695,8 +852,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              Colors.blue[800]!.withOpacity(0.9),
-              Colors.blue[800]!.withOpacity(0.6),
+              AppColors.primaryColor.withOpacity(0.9),
+              AppColors.primaryColor.withOpacity(0.6),
             ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
@@ -732,7 +889,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
-  Widget _buildInvoiceDetails() {
+  Widget _buildReceiptDetails() {
     return Card(
       margin: EdgeInsets.symmetric(horizontal: 16),
       child: Container(
@@ -758,11 +915,12 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'INVOICE NO',
+                      'RECEIPT NO',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     Text(
-                      invoiceData?['invoiceId']?.toString().substring(0, 8) ?? '',
+                      receiptData?['receiptId']?.toString().substring(0, 8) ??
+                          '',
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
@@ -778,7 +936,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     Text(
-                      _formatDateTime(invoiceData?['createdAt']),
+                      _formatDateTime(receiptData?['issuedAt']),
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
@@ -796,11 +954,29 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
+                      'INVOICE NO',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      receiptData?['invoiceId']?.toString().substring(0, 8) ??
+                          '',
+                      style: TextStyle(fontSize: 14),
+                    ),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
                       'BOOKING NO',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     Text(
-                      invoiceData?['serviceBookingId']?.toString().substring(0, 8) ?? '',
+                      receiptData?['serviceBookingId']?.toString().substring(
+                            0,
+                            8,
+                          ) ??
+                          '',
                       style: TextStyle(fontSize: 14),
                     ),
                   ],
@@ -814,8 +990,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   }
 
   Widget _buildCustomerVehicleInfo() {
-    final customerInfo = invoiceData?['customerInfo'] ?? {};
-    final vehicleInfo = invoiceData?['vehicleInfo'] ?? {};
+    final customerInfo = receiptData?['customerInfo'] ?? {};
+    final vehicleInfo = receiptData?['vehicleInfo'] ?? {};
 
     return Card(
       margin: EdgeInsets.all(16),
@@ -835,6 +1011,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         ),
         child: Column(
           children: [
+            // Customer Info
             ListTile(
               leading: Icon(Icons.person, color: Colors.blue),
               title: Text(
@@ -861,6 +1038,7 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
               ),
             ),
             Divider(),
+            // Vehicle Info
             ListTile(
               leading: Icon(Icons.directions_car, color: Colors.green),
               title: Text(
@@ -881,6 +1059,10 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
                   ),
                   Text(
                     'Chassis No: ${vehicleInfo['vin'] ?? 'N/A'}',
+                    style: TextStyle(fontSize: 14),
+                  ),
+                  Text(
+                    'Mileage: ${receiptData?['mileage']?['afterService'] ?? 0} km',
                     style: TextStyle(fontSize: 14),
                   ),
                 ],
@@ -1026,7 +1208,16 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             _buildTotalRow('Subtotal', _getSubtotal(), isBold: true),
             if (_getTaxAmount() > 0)
               _buildTotalRow('SST (8%)', _getTaxAmount(), isTax: true),
-            _buildTotalRow('TOTAL AMOUNT', _getTotalAmount(), isTotal: true),
+            _buildTotalRow('GRAND AMOUNT', _getTotalAmount(), isTotal: true),
+            _buildTotalRow('PAID AMOUNT', _getAmountPaid(), isPaid: true),
+            if (_getChangeAmount() > 0)
+              _buildTotalRow(
+                'CHANGE AMOUNT',
+                _getChangeAmount(),
+                isChange: true,
+              ),
+            if (_getBalanceDue() > 0)
+              _buildTotalRow('BALANCE DUE', _getBalanceDue(), isBalance: true),
           ],
         ),
       ),
@@ -1034,12 +1225,15 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   }
 
   Widget _buildTotalRow(
-      String label,
-      double amount, {
-        bool isBold = false,
-        bool isTotal = false,
-        bool isTax = false,
-      }) {
+    String label,
+    double amount, {
+    bool isBold = false,
+    bool isTotal = false,
+    bool isTax = false,
+    bool isPaid = false,
+    bool isChange = false,
+    bool isBalance = false,
+  }) {
     return Padding(
       padding: EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -1049,7 +1243,9 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             label,
             style: TextStyle(
               fontSize: isTotal ? 16 : 14,
-              fontWeight: isBold || isTotal ? FontWeight.bold : FontWeight.normal,
+              fontWeight:
+                  isBold || isTotal ? FontWeight.bold : FontWeight.normal,
+              color: isBalance ? Colors.red : Colors.black,
             ),
           ),
           Text(
@@ -1057,7 +1253,14 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             style: TextStyle(
               fontSize: isTotal ? 18 : 14,
               fontWeight: FontWeight.bold,
-              color: isTax ? Colors.red : (isTotal ? Colors.green : Colors.black),
+              color:
+                  isTax
+                      ? Colors.red
+                      : (isTotal
+                          ? Colors.green
+                          : (isPaid
+                              ? AppColors.primaryColor
+                              : (isBalance ? Colors.red : Colors.black))),
             ),
           ),
         ],
@@ -1065,102 +1268,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
     );
   }
 
-  Widget _buildWarrantyInfo() {
-    final warranty = invoiceData?['warranty'] ?? {};
-    final labourWarranty = warranty['labour'] ?? {};
-    final partsWarranty = warranty['parts'] ?? {};
-
-    final hasLabourWarranty = (labourWarranty['days'] as int? ?? 0) > 0;
-    final hasPartsWarranty = (partsWarranty['days'] as int? ?? 0) > 0;
-
-    if (!hasLabourWarranty && !hasPartsWarranty) {
-      return Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(
-          child: Text(
-            'No warranty provided for this service',
-            style: TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-        ),
-      );
-    }
-
-    return Padding(
-      padding: EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'WARRANTY INFORMATION',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Colors.blue[800],
-            ),
-          ),
-          SizedBox(height: 12),
-          if (hasLabourWarranty)
-            _buildWarrantyItem('Labour Warranty:', labourWarranty),
-          if (hasPartsWarranty)
-            _buildWarrantyItem('Parts Warranty:', partsWarranty),
-          if (warranty['generalTerms'] != null)
-            _buildWarrantyDetail('Terms:', warranty['generalTerms']),
-          if (warranty['exclusions'] != null)
-            _buildWarrantyDetail('Exclusions:', warranty['exclusions']),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWarrantyItem(String label, Map<String, dynamic> warranty) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.check_circle, color: Colors.green, size: 16),
-          SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '$label ${warranty['days']} days (until ${_formatDate(warranty['endDate'])})',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                ),
-                if (warranty['notes'] != null)
-                  Text(
-                    warranty['notes'],
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildWarrantyDetail(String label, String text) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.info, color: Colors.orange, size: 16),
-          SizedBox(width: 8),
-          Expanded(child: Text('$label $text', style: TextStyle(fontSize: 14))),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildServiceMaintenance() {
-    final serviceMaintenances = invoiceData?['serviceMaintenances'] ?? [];
-
-    if (serviceMaintenances.isEmpty || serviceMaintenances is! List) {
-      return SizedBox.shrink(); // Hide if no maintenance data
-    }
+  Widget _buildPaymentInformation() {
+    final payment = receiptData?['payment'] ?? {};
 
     return Card(
       margin: EdgeInsets.all(16),
@@ -1177,53 +1286,135 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             ),
           ],
         ),
+        padding: EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                'NEXT SERVICE REMINDER',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
+            Text(
+              'PAYMENT INFORMATION',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            Padding(
-              padding: EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: serviceMaintenances.map<Widget>((maintenance) {
-                  final serviceType = (maintenance['serviceType'] as String? ?? '')
-                      .replaceAll('_', ' ');
-                  final nextServiceMileage = maintenance['nextServiceMileage'] ?? '';
-                  final nextServiceDate = maintenance['nextServiceDate'];
+            SizedBox(height: 16),
+            _buildInfoRow(
+              'Payment Method',
+              _getPaymentMethodDisplay(payment['method']),
+            ),
+            _buildInfoRow(
+              'Payment Status',
+              _getPaymentStatusDisplay(receiptData?['status']),
+              status: true,
+            ),
+            _buildInfoRow('Paid At', _formatTime(payment['paidAt'])),
+            if (payment['transactionId'] != null)
+              _buildInfoRow('Transaction ID', payment['transactionId']),
+            if (payment['notes'] != null)
+              _buildInfoRow('Notes', payment['notes']),
+          ],
+        ),
+      ),
+    );
+  }
 
-                  return Padding(
-                    padding: EdgeInsets.only(bottom: 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          serviceType.isNotEmpty ? serviceType : 'Service',
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          'Next service at $nextServiceMileage km or by ${_formatDate(nextServiceDate)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }).toList(),
+  Widget _buildInfoRow(String label, String value, {bool status = false}) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+          if (status)
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.green,
+                borderRadius: BorderRadius.circular(12),
               ),
+              child: Text(
+                value,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            )
+          else
+            Text(
+              value,
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServiceSummary() {
+    return Card(
+      margin: EdgeInsets.all(16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.grey.shade50,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade300),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.05),
+              blurRadius: 10,
+              offset: const Offset(0, 2),
             ),
           ],
         ),
+        padding: EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'SERVICE SUMMARY',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            SizedBox(height: 16),
+            _buildSummaryRow('Services Completed', '${_getTotalServices()}'),
+            _buildSummaryRow('Parts Used', '${_getTotalParts()}'),
+            _buildSummaryRow(
+              'Service Date',
+              _formatDateTime(receiptData?['issuedAt']),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Service Advisor',
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  receiptData?['issuedBy'],
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryRow(String label, String value) {
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+          Text(
+            value,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+          ),
+        ],
       ),
     );
   }
@@ -1254,12 +1445,8 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
             ),
             SizedBox(height: 16),
             _buildNoteItem(
-              Icons.payment,
-              'Please make payment before service begins',
-            ),
-            _buildNoteItem(
               Icons.receipt,
-              'This is an official invoice for service estimation',
+              'Please keep this receipt for warranty claims',
             ),
             _buildNoteItem(
               Icons.phone,
@@ -1293,11 +1480,11 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
         children: [
           Expanded(
             child: ElevatedButton.icon(
-              onPressed: isPrinting ? null : _printInvoice,
+              onPressed: isPrinting ? null : _printReceipt,
               icon: Icon(isPrinting ? Icons.print_disabled : Icons.print),
-              label: Text(isPrinting ? 'PRINTING...' : 'PRINT INVOICE'),
+              label: Text(isPrinting ? 'PRINTING...' : 'PRINT RECEIPT'),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
+                backgroundColor: AppColors.primaryColor,
                 foregroundColor: Colors.white,
                 padding: EdgeInsets.symmetric(vertical: 16),
               ),
@@ -1316,12 +1503,12 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
           Icon(Icons.receipt_long, size: 64, color: Colors.grey),
           SizedBox(height: 16),
           Text(
-            'No invoice found',
+            'No receipt found',
             style: TextStyle(fontSize: 18, color: Colors.grey),
           ),
           SizedBox(height: 8),
           Text(
-            'The requested invoice could not be found',
+            'The requested receipt could not be found',
             style: TextStyle(fontSize: 14, color: Colors.grey),
           ),
         ],
@@ -1333,30 +1520,31 @@ class _ServiceInvoicePageState extends State<ServiceInvoicePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('OFFICIAL INVOICE'),
-        backgroundColor: Colors.blue[800],
+        title: Text('OFFICIAL RECEIPT'),
+        backgroundColor: AppColors.secondaryColor,
         foregroundColor: Colors.white,
       ),
-      body: isLoading
-          ? Center(child: CircularProgressIndicator())
-          : invoiceData == null
-          ? _buildEmptyState()
-          : SingleChildScrollView(
-        child: Column(
-          children: [
-            _buildInvoiceHeader(),
-            _buildInvoiceDetails(),
-            _buildCustomerVehicleInfo(),
-            _buildServicesBreakdown(),
-            _buildTotalsSection(),
-            _buildWarrantyInfo(),
-            _buildServiceMaintenance(),
-            _buildImportantNotes(),
-            _buildActionButtons(),
-            SizedBox(height: 20),
-          ],
-        ),
-      ),
+      body:
+          isLoading
+              ? Center(child: CircularProgressIndicator())
+              : receiptData == null
+              ? _buildEmptyState()
+              : SingleChildScrollView(
+                child: Column(
+                  children: [
+                    _buildReceiptHeader(),
+                    _buildReceiptDetails(),
+                    _buildCustomerVehicleInfo(),
+                    _buildServicesBreakdown(),
+                    _buildTotalsSection(),
+                    _buildPaymentInformation(),
+                    _buildServiceSummary(),
+                    _buildImportantNotes(),
+                    _buildActionButtons(),
+                    SizedBox(height: 20),
+                  ],
+                ),
+              ),
     );
   }
 }
