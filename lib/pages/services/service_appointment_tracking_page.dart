@@ -869,25 +869,6 @@ class _ServiceAppointmentTrackingPageState
                 ),
               ),
             ],
-
-            if (_appointmentData!['status'] == 'completed') ...[
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton(
-                  onPressed: () => _showRatingDialog(),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryColor,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text('Rate Service'),
-                ),
-              ),
-            ],
           ],
         ),
       ),
@@ -1193,23 +1174,6 @@ class _ServiceAppointmentTrackingPageState
                   }
                 },
                 child: const Text('Yes, Cancel'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  void _showRatingDialog() {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Rate Your Experience'),
-            content: const Text('Rating feature coming soon!'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Close'),
               ),
             ],
           ),

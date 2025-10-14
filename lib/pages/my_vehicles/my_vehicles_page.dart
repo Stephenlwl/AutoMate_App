@@ -10,8 +10,13 @@ import 'package:automate_application/pages/my_vehicles/view_vehicle_details_page
 
 class MyVehiclesPage extends StatefulWidget {
   final String userId;
+  final String userName;
 
-  const MyVehiclesPage({super.key, required this.userId});
+  const MyVehiclesPage({
+    super.key,
+    required this.userId,
+    required this.userName,
+  });
 
   @override
   State<MyVehiclesPage> createState() => _MyVehiclesPageState();
@@ -360,6 +365,8 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
                     // Refresh vehicles list when status is updated
                     _loadVehicles();
                   },
+                  userId: widget.userId,
+                  userName: widget.userName,
                 ),
           ),
         );
@@ -524,9 +531,7 @@ class _MyVehiclesPageState extends State<MyVehiclesPage>
                               MaterialPageRoute(
                                 builder:
                                     (context) => EditVehiclePage(
-                                      userId:
-                                          widget
-                                              .userId,
+                                      userId: widget.userId,
                                       vehicle: vehicle,
                                       vehicleIndex: index,
                                       onVehicleUpdated: () {
@@ -941,13 +946,13 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       setState(() => _isLoadingMakes = true);
 
       final snapshot =
-      await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .orderBy('createdAt', descending: true)
-          .get();
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .orderBy('createdAt', descending: true)
+              .get();
 
       final makes =
-      snapshot.docs.map((doc) => doc['make'].toString()).toSet().toList();
+          snapshot.docs.map((doc) => doc['make'].toString()).toSet().toList();
 
       makes.sort();
       setState(() {
@@ -965,17 +970,17 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       setState(() => _isLoadingModels = true);
 
       final snapshot =
-      await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .where('make', isEqualTo: make)
-          .get();
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: make)
+              .get();
 
       final models = <String>{};
       for (var doc in snapshot.docs) {
         final modelArray = List.from(doc['model'] ?? []);
         for (var m in modelArray) {
           final fitments =
-          (m['fitments'] is List) ? List.from(m['fitments']) : [];
+              (m['fitments'] is List) ? List.from(m['fitments']) : [];
           final hasApproved = fitments.any((f) => f['status'] == 'approved');
           if (hasApproved) {
             models.add(m['name']);
@@ -1001,10 +1006,10 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       setState(() => _isLoadingYears = true);
 
       final snapshot =
-      await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .where('make', isEqualTo: make)
-          .get();
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: make)
+              .get();
 
       final years = <String>{};
       for (var doc in snapshot.docs) {
@@ -1023,8 +1028,8 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
 
       setState(() {
         _years =
-        years.toList()
-          ..sort((a, b) => int.parse(b).compareTo(int.parse(a)));
+            years.toList()
+              ..sort((a, b) => int.parse(b).compareTo(int.parse(a)));
         _selectedYear = null;
         _isLoadingYears = false;
       });
@@ -1039,10 +1044,10 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       setState(() => _isLoadingSizeClasses = true);
 
       final snapshot =
-      await FirebaseFirestore.instance
-          .collection('vehicles_list')
-          .where('make', isEqualTo: make)
-          .get();
+          await FirebaseFirestore.instance
+              .collection('vehicles_list')
+              .where('make', isEqualTo: make)
+              .get();
 
       final sizeClasses = <String>{};
       String? foundDisplacement;
@@ -1061,8 +1066,12 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
                 if (foundDisplacement == null && f['displacement'] != null) {
                   var displacement = f['displacement'].toString();
                   // Remove square brackets if displacement is an array string
-                  if (displacement.startsWith('[') && displacement.endsWith(']')) {
-                    displacement = displacement.substring(1, displacement.length - 1);
+                  if (displacement.startsWith('[') &&
+                      displacement.endsWith(']')) {
+                    displacement = displacement.substring(
+                      1,
+                      displacement.length - 1,
+                    );
                   }
                   foundDisplacement = displacement;
                 }
@@ -1163,23 +1172,23 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       context: context,
       builder:
           (context) => AlertDialog(
-        title: const Text('Select Image Source'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Camera'),
-              onTap: () => Navigator.pop(context, ImageSource.camera),
+            title: const Text('Select Image Source'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.camera_alt),
+                  title: const Text('Camera'),
+                  onTap: () => Navigator.pop(context, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library),
+                  title: const Text('Gallery'),
+                  onTap: () => Navigator.pop(context, ImageSource.gallery),
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Gallery'),
-              onTap: () => Navigator.pop(context, ImageSource.gallery),
-            ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 
@@ -1255,10 +1264,10 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
       };
       // Get current vehicles
       final doc =
-      await FirebaseFirestore.instance
-          .collection('car_owners')
-          .doc(widget.userId)
-          .get();
+          await FirebaseFirestore.instance
+              .collection('car_owners')
+              .doc(widget.userId)
+              .get();
 
       List<dynamic> currentVehicles = [];
       if (doc.exists) {
@@ -1486,7 +1495,7 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
                 height: 50,
                 child: ElevatedButton(
                   onPressed:
-                  _isLoading || _isUploadingImage ? null : _submitVehicle,
+                      _isLoading || _isUploadingImage ? null : _submitVehicle,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: primaryColor,
                     foregroundColor: Colors.white,
@@ -1495,29 +1504,29 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
                     ),
                   ),
                   child:
-                  _isLoading
-                      ? const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2,
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      Text('Submitting...'),
-                    ],
-                  )
-                      : const Text(
-                    'Submit for Approval',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                      _isLoading
+                          ? const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                              SizedBox(width: 12),
+                              Text('Submitting...'),
+                            ],
+                          )
+                          : const Text(
+                            'Submit for Approval',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                 ),
               ),
 
@@ -1612,12 +1621,12 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
               style: TextStyle(color: Colors.grey.shade600),
             ),
             items:
-            items.map((item) {
-              return DropdownMenuItem<String>(
-                value: item,
-                child: Text(item),
-              );
-            }).toList(),
+                items.map((item) {
+                  return DropdownMenuItem<String>(
+                    value: item,
+                    child: Text(item),
+                  );
+                }).toList(),
             onChanged: enabled && !isLoading ? onChanged : null,
             validator: (value) {
               if (value == null || value.isEmpty) {
@@ -1702,82 +1711,82 @@ class _AddVehiclePageState extends State<AddVehiclePage> {
             height: 120,
             decoration: BoxDecoration(
               color:
-              _vocImage != null
-                  ? Colors.green.shade50
-                  : Colors.grey.shade50,
+                  _vocImage != null
+                      ? Colors.green.shade50
+                      : Colors.grey.shade50,
               border: Border.all(
                 color:
-                _vocImage != null
-                    ? Colors.green.shade300
-                    : Colors.grey.shade300,
+                    _vocImage != null
+                        ? Colors.green.shade300
+                        : Colors.grey.shade300,
                 style: BorderStyle.solid,
                 width: 2,
               ),
               borderRadius: BorderRadius.circular(12),
             ),
             child:
-            _isUploadingImage
-                ? const Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CircularProgressIndicator(color: primaryColor),
-                SizedBox(height: 8),
-                Text('Uploading...'),
-              ],
-            )
-                : _vocImage != null
-                ? Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.check_circle,
-                  color: Colors.green.shade600,
-                  size: 32,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'VOC Document Uploaded',
-                  style: TextStyle(
-                    color: Colors.green.shade700,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Tap to change',
-                  style: TextStyle(
-                    color: Colors.green.shade600,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            )
-                : Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.cloud_upload_outlined,
-                  color: Colors.grey.shade600,
-                  size: 32,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Tap to upload VOC document',
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Required for verification',
-                  style: TextStyle(
-                    color: Colors.grey.shade600,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
+                _isUploadingImage
+                    ? const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(color: primaryColor),
+                        SizedBox(height: 8),
+                        Text('Uploading...'),
+                      ],
+                    )
+                    : _vocImage != null
+                    ? Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.check_circle,
+                          color: Colors.green.shade600,
+                          size: 32,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'VOC Document Uploaded',
+                          style: TextStyle(
+                            color: Colors.green.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Tap to change',
+                          style: TextStyle(
+                            color: Colors.green.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    )
+                    : Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.cloud_upload_outlined,
+                          color: Colors.grey.shade600,
+                          size: 32,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Tap to upload VOC document',
+                          style: TextStyle(
+                            color: Colors.grey.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Required for verification',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
           ),
         ),
       ],

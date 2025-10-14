@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
@@ -13,11 +14,13 @@ import 'package:automate_application/pages/towing/request_towing_page.dart';
 import 'package:automate_application/pages/service_history/service_hisotry_page.dart';
 import 'package:automate_application/pages/my_vehicles/my_vehicles_page.dart';
 import 'package:automate_application/pages/notification/notification.dart';
+import '../../services/notification_listener_service.dart';
 import '../../widgets/notification_badge.dart';
 import '../../services/notification_service.dart';
 import '../../blocs/notification_bloc.dart';
 import '../../pages/towing/towing_request_tracking_page.dart';
 import '../../pages/services/service_appointment_tracking_page.dart';
+import '../../pages/profile/profile_page.dart';
 
 class AppColors {
   static const Color primaryColor = Color(0xFFFF6B00);
@@ -106,6 +109,8 @@ class _HomepageState extends State<Homepage> {
   final Set<String> _shownReminderIds = {};
   bool _remindersChecked = false;
   int _unreadNotificationCount = 0;
+  late NotificationBloc _notificationBloc;
+
   // Location
   String? currentLocation;
 
@@ -114,31 +119,37 @@ class _HomepageState extends State<Homepage> {
   @override
   void initState() {
     super.initState();
+    _notificationBloc = context.read<NotificationBloc>();
     _initializeChat();
     _loadAll();
     _startNotificationListening();
     _loadShownReminders();
     _initializeRealTimeListeners();
+    _initializeNotificationListener();
   }
 
-  // void _initializeNotifications() {
-  //   // Initialize notification service with bloc
-  //   NotificationService().initialize(
-  //     widget.notificationBloc,
-  //     userId: widget.userId,
-  //     userName: widget.userName,
-  //     userEmail: widget.userEmail,
-  //   );
-  //
-  //   // Listen for notification state changes
-  //   widget.notificationBloc.stream.listen((state) {
-  //     if (mounted) {
-  //       setState(() {
-  //         _unreadNotificationCount = state.unreadCount;
-  //       });
-  //     }
-  //   });
-  // }
+  void _startNotificationListening() {
+    final notificationService = NotificationListenerService(_notificationBloc, widget.userId);
+    notificationService.startListening();
+  }
+
+  void _initializeNotificationListener() {
+    // Listen for notification state changes
+    _notificationBloc.stream.listen((state) {
+      if (mounted) {
+        setState(() {
+          _unreadNotificationCount = state.notifications
+              .where((notification) =>
+          notification.userId == widget.userId &&
+              !notification.isRead)
+              .length;
+        });
+      }
+    });
+
+    // Load initial notifications
+    _notificationBloc.add(LoadNotificationsEvent());
+  }
 
   void _initializeRealTimeListeners() {
     _listenToAppointmentUpdates();
@@ -446,11 +457,6 @@ class _HomepageState extends State<Homepage> {
     }
   }
 
-  void _startNotificationListening() {
-    NotificationService().startListeningToUserUpdates(widget.userId);
-    NotificationService().subscribeToUserTopics(widget.userId);
-  }
-
   Future<void> _loadShownReminders() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -541,7 +547,6 @@ class _HomepageState extends State<Homepage> {
           isUrgent = daysUntilDue <= 3;
         }
 
-        // Overdue notification (only show once)
         if (daysUntilDue < 0 && !_shownReminderIds.contains(reminderId)) {
           shouldShowReminder = true;
           reminderMessage =
@@ -1356,7 +1361,6 @@ class _HomepageState extends State<Homepage> {
     _towingSubscription?.cancel();
     _vehicleSubscription?.cancel();
     super.dispose();
-    NotificationService().stopListening();
   }
 
   @override
@@ -2274,7 +2278,7 @@ class _HomepageState extends State<Homepage> {
                             MaterialPageRoute(
                               builder:
                                   (context) =>
-                                      MyVehiclesPage(userId: widget.userId),
+                                      MyVehiclesPage(userId: widget.userId, userName: widget.userName),
                             ),
                           );
                         }
@@ -2960,6 +2964,16 @@ class _HomepageState extends State<Homepage> {
     return BottomNavigationBar(
       currentIndex: _selectedIndex,
       onTap: (index) {
+        if (index == 0) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder:
+                  (context) =>
+                  MyVehiclesPage(userId: widget.userId, userName: widget.userName,),
+            ),
+          );
+        }
         if (index == 2) {
           Navigator.push(
             context,
@@ -2967,8 +2981,14 @@ class _HomepageState extends State<Homepage> {
               builder: (context) => MessageChatListPage(userId: widget.userId),
             ),
           );
-        } else {
-          setState(() => _selectedIndex = index);
+        }
+        if (index == 3) {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => CarOwnerProfilePage(userId: widget.userId),
+            ),
+          );
         }
       },
       type: BottomNavigationBarType.fixed,

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 class NotificationModel {
   final String id;
+  final String userId;
   final String title;
   final String body;
   final String type;
@@ -12,6 +13,7 @@ class NotificationModel {
 
   NotificationModel({
     required this.id,
+    required this.userId,
     required this.title,
     required this.body,
     required this.type,
@@ -20,9 +22,12 @@ class NotificationModel {
     this.isRead = false,
   });
 
-  factory NotificationModel.fromRemoteMessage(RemoteMessage message) {
+  factory NotificationModel.fromRemoteMessage(RemoteMessage message, {required String currentUserId}) {
+    final messageUserId = message.data['userId'] ?? currentUserId;
+
     return NotificationModel(
       id: message.messageId ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      userId: messageUserId,
       title: message.notification?.title ?? 'AutoMate',
       body: message.notification?.body ?? '',
       type: message.data['type'] ?? 'system',
@@ -31,9 +36,29 @@ class NotificationModel {
     );
   }
 
+  factory NotificationModel.create({
+    required String userId,
+    required String title,
+    required String body,
+    required String type,
+    Map<String, dynamic>? data,
+    String? id,
+  }) {
+    return NotificationModel(
+      id: id ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      userId: userId,
+      title: title,
+      body: body,
+      type: type,
+      data: data ?? {},
+      timestamp: DateTime.now(),
+    );
+  }
+
   factory NotificationModel.fromJson(Map<String, dynamic> json) {
     return NotificationModel(
       id: json['id'] as String,
+      userId: json['userId'] as String,
       title: json['title'] as String,
       body: json['body'] as String,
       type: json['type'] as String,
@@ -46,6 +71,7 @@ class NotificationModel {
   Map<String, dynamic> toJson() {
     return {
       'id': id,
+      'userId': userId,
       'title': title,
       'body': body,
       'type': type,
@@ -60,15 +86,23 @@ class NotificationModel {
   }
 
   NotificationModel copyWith({
+    String? id,
+    String? userId,
+    String? title,
+    String? body,
+    String? type,
+    Map<String, dynamic>? data,
+    DateTime? timestamp,
     bool? isRead,
   }) {
     return NotificationModel(
-      id: id,
-      title: title,
-      body: body,
-      type: type,
-      data: data,
-      timestamp: timestamp,
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      title: title ?? this.title,
+      body: body ?? this.body,
+      type: type ?? this.type,
+      data: data ?? this.data,
+      timestamp: timestamp ?? this.timestamp,
       isRead: isRead ?? this.isRead,
     );
   }
@@ -76,7 +110,6 @@ class NotificationModel {
   bool get isServiceReminder => type == 'service_reminder';
   bool get isServiceBooking => type == 'service_booking';
   bool get isTowingRequest => type == 'towing_request';
-  bool get isPayment => type == 'payment';
 
   String get reminderDetails {
     if (!isServiceReminder) return '';

@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-
 import '../blocs/notification_bloc.dart';
 import '../model/notification_model.dart';
 
@@ -13,18 +11,18 @@ class NotificationListenerService {
   final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NotificationBloc _notificationBloc;
+  final String _userId;
 
   List<StreamSubscription<dynamic>> _subscriptions = [];
-
   final Map<String, DateTime> _processedNotifications = {};
   static const Duration _deduplicationWindow = Duration(minutes: 2);
 
-  NotificationListenerService(this._notificationBloc);
+  NotificationListenerService(this._notificationBloc, this._userId);
 
-  void startListening(String userId) {
-    _listenToServiceBookings(userId);
-    _listenToTowingRequests(userId);
-    _checkServiceMaintenanceReminders(userId);
+  void startListening() {
+    _listenToServiceBookings();
+    _listenToTowingRequests();
+    _checkServiceMaintenanceReminders();
   }
 
   void stopListening() {
@@ -35,10 +33,10 @@ class NotificationListenerService {
     _processedNotifications.clear();
   }
 
-  void _listenToServiceBookings(String userId) {
+  void _listenToServiceBookings() {
     final subscription = _firestore
         .collection('service_bookings')
-        .where('userId', isEqualTo: userId)
+        .where('userId', isEqualTo: _userId)
         .snapshots()
         .listen((QuerySnapshot snapshot) {
       for (var change in snapshot.docChanges) {
@@ -51,23 +49,21 @@ class NotificationListenerService {
           if (change.doc.metadata.hasPendingWrites) {
             continue;
           }
+          final documentUserId = data['userId']?.toString();
+          if (documentUserId != _userId) {
+            continue;
+          }
 
           final bookingId = change.doc.id;
           final updatedAt = (data['updatedAt'] as Timestamp?)?.toDate() ??
               DateTime.now();
 
           if (_shouldProcessNotification(bookingId, updatedAt)) {
-            _handleServiceBookingUpdate(bookingId, data);
-          }
-        }
-        if (change.type == DocumentChangeType.added) {
-          final data = change.doc.data() as Map<String, dynamic>;
-          final bookingId = change.doc.id;
-          final createdAt = (data['createdAt'] as Timestamp?)?.toDate() ??
-              DateTime.now();
-
-          if (_shouldProcessNotification(bookingId, createdAt)) {
-            _handleNewServiceBooking(bookingId, data);
+            if (change.type == DocumentChangeType.added) {
+              _handleNewServiceBooking(bookingId, data);
+            } else {
+              _handleServiceBookingUpdate(bookingId, data);
+            }
           }
         }
       }
@@ -76,32 +72,34 @@ class NotificationListenerService {
     _subscriptions.add(subscription);
   }
 
-  void _listenToTowingRequests(String userId) {
+  void _listenToTowingRequests() {
     final subscription = _firestore
         .collection('towing_requests')
-        .where('userId', isEqualTo: userId)
+        .where('userId', isEqualTo: _userId)
         .snapshots()
         .listen((QuerySnapshot snapshot) {
       for (var change in snapshot.docChanges) {
-        if (change.type == DocumentChangeType.modified) {
+        if (change.type == DocumentChangeType.modified ||
+            change.type == DocumentChangeType.added) {
           final data = change.doc.data() as Map<String, dynamic>;
-          final requestId = change.doc.id;
-          final updatedAt = (data['updatedAt'] as Timestamp?)?.toDate() ??
-              DateTime.now();
 
-          if (_shouldProcessNotification(requestId, updatedAt)) {
-            _handleTowingRequestUpdate(requestId, data);
+          final documentUserId = data['userId']?.toString();
+          if (documentUserId != _userId) {
+            debugPrint('Skipping towing request for different user: $documentUserId');
+            continue;
           }
-        }
 
-        if (change.type == DocumentChangeType.added) {
-          final data = change.doc.data() as Map<String, dynamic>;
           final requestId = change.doc.id;
-          final createdAt = (data['createdAt'] as Timestamp?)?.toDate() ??
+          final timestamp = (data['updatedAt'] as Timestamp?)?.toDate() ??
+              (data['createdAt'] as Timestamp?)?.toDate() ??
               DateTime.now();
 
-          if (_shouldProcessNotification(requestId, createdAt)) {
-            _handleNewTowingRequest(requestId, data);
+          if (_shouldProcessNotification(requestId, timestamp)) {
+            if (change.type == DocumentChangeType.added) {
+              _handleNewTowingRequest(requestId, data);
+            } else {
+              _handleTowingRequestUpdate(requestId, data);
+            }
           }
         }
       }
@@ -119,7 +117,7 @@ class NotificationListenerService {
       return now.difference(processedTime) > _deduplicationWindow;
     });
 
-    // Check if we recently processed this
+    // Check if recently processed this
     if (_processedNotifications.containsKey(key)) {
       return false;
     }
@@ -129,10 +127,10 @@ class NotificationListenerService {
     return true;
   }
 
-  void _checkServiceMaintenanceReminders(String userId) {
+  void _checkServiceMaintenanceReminders() {
     final subscription = _firestore
         .collection('car_owners')
-        .doc(userId)
+        .doc(_userId)
         .snapshots()
         .listen((doc) async {
       if (doc.exists) {
@@ -176,8 +174,8 @@ class NotificationListenerService {
       final mileageDifference = nextServiceMileage - currentMileage;
       if (mileageDifference <= 500 && mileageDifference > 0) {
         await _showServiceReminderNotification(
-          title: 'Service Mileage Approaching',
-          body: 'Your $serviceType for $vehicleInfo is due in $mileageDifference km',
+          title: 'Service Due Soon - $vehicleInfo',
+          body: 'Your $serviceType is due in $mileageDifference km. Book your service now!',
           type: 'service_reminder',
           data: {
             'serviceType': serviceType,
@@ -185,6 +183,19 @@ class NotificationListenerService {
             'currentMileage': currentMileage,
             'dueMileage': nextServiceMileage,
             'reminderType': 'mileage',
+          },
+        );
+      } else if (mileageDifference <= 0) {
+        await _showServiceReminderNotification(
+          title: 'Service Overdue - $vehicleInfo',
+          body: 'Your $serviceType is ${mileageDifference.abs()} km overdue. Please schedule service immediately.',
+          type: 'service_reminder',
+          data: {
+            'serviceType': serviceType,
+            'vehicleInfo': vehicleInfo,
+            'currentMileage': currentMileage,
+            'dueMileage': nextServiceMileage,
+            'reminderType': 'overdue_mileage',
           },
         );
       }
@@ -198,8 +209,8 @@ class NotificationListenerService {
 
         if (daysUntilDue <= 7 && daysUntilDue >= 0) {
           await _showServiceReminderNotification(
-            title: 'Service Date Approaching',
-            body: 'Your $serviceType for $vehicleInfo is due in $daysUntilDue days',
+            title: 'Service Appointment - $vehicleInfo',
+            body: 'Your $serviceType is due in $daysUntilDue days. Get ready for your appointment!',
             type: 'service_reminder',
             data: {
               'serviceType': serviceType,
@@ -211,18 +222,17 @@ class NotificationListenerService {
           );
         }
 
-        // Overdue notification
         if (daysUntilDue < 0) {
           await _showServiceReminderNotification(
-            title: 'Service Overdue',
-            body: 'Your $serviceType for $vehicleInfo is ${daysUntilDue.abs()} days overdue',
+            title: 'Service Overdue - $vehicleInfo',
+            body: 'Your $serviceType is ${daysUntilDue.abs()} days overdue. Please contact your service center.',
             type: 'service_reminder',
             data: {
               'serviceType': serviceType,
               'vehicleInfo': vehicleInfo,
               'dueDate': nextServiceDate,
               'daysOverdue': daysUntilDue.abs(),
-              'reminderType': 'overdue',
+              'reminderType': 'overdue_date',
             },
           );
         }
@@ -235,43 +245,54 @@ class NotificationListenerService {
   void _handleServiceBookingUpdate(String bookingId, Map<String, dynamic> data) {
     final status = data['status'] ?? 'unknown';
     final serviceCenterId = data['serviceCenterId'] ?? '';
-
-    // Get service center name for better notification
+    final vehicleMake = data['vehicle']['make'] ?? 'Your vehicle';
+    final vehicleModel = data['vehicle']['model'] ?? '';
+    final vehicleYear = data['vehicle']['year'] ?? '';
+    final plateNumber = data['vehicle']['plateNumber'] ?? '';
+    final serviceType = data['serviceType'] ?? 'service';
+    final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
     _getServiceCenterName(serviceCenterId).then((serviceCenterName) {
       final notification = NotificationModel(
-        id: 'service_${DateTime.now().millisecondsSinceEpoch}',
-        title: 'Service Booking Updated',
-        body: 'Your service at $serviceCenterName is now ${_formatStatus(status)}',
+        id: 'service_${_userId}_${bookingId}_${DateTime.now().millisecondsSinceEpoch}',
+        title: _getServiceBookingTitle(status),
+        userId: _userId,
+        body: _getServiceBookingBody(status, serviceCenterName, vehicleInfo, serviceType, data),
         type: 'service_booking',
         data: {
           'bookingId': bookingId,
+          'userId': _userId,
           'status': status,
           'serviceCenterId': serviceCenterId,
+          'vehicleInfo': '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim()
         },
         timestamp: DateTime.now(),
       );
 
-      // Add to Bloc state
       _notificationBloc.add(NewNotificationEvent(notification));
-
-      // Show local notification
       _showLocalNotification(notification);
     });
   }
 
   void _handleNewServiceBooking(String bookingId, Map<String, dynamic> data) {
     final serviceCenterId = data['serviceCenterId'] ?? '';
+    final vehicleMake = data['vehicle']['make'] ?? 'Your vehicle';
+    final vehicleModel = data['vehicle']['model'] ?? '';
+    final vehicleYear = data['vehicle']['year'] ?? '';
+    final plateNumber = data['vehicle']['plateNumber'] ?? '';
+    final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
 
     _getServiceCenterName(serviceCenterId).then((serviceCenterName) {
       final notification = NotificationModel(
-        id: 'service_${DateTime.now().millisecondsSinceEpoch}',
-        title: 'Service Booking Created',
-        body: 'Your service booking at $serviceCenterName has been confirmed',
+        id: 'service_${bookingId}_${DateTime.now().millisecondsSinceEpoch}',
+        userId: _userId,
+        title: 'Booking Confirmed',
+        body: 'Your for $vehicleInfo at $serviceCenterName has been received. We\'ll confirm shortly.',
         type: 'service_booking',
         data: {
           'bookingId': bookingId,
           'status': data['status'] ?? 'pending',
           'serviceCenterId': serviceCenterId,
+          'vehicleInfo': vehicleInfo,
         },
         timestamp: DateTime.now(),
       );
@@ -283,15 +304,24 @@ class NotificationListenerService {
 
   void _handleTowingRequestUpdate(String requestId, Map<String, dynamic> data) {
     final status = data['status'] ?? 'unknown';
+    final vehicleMake = data['vehicleInfo']['make'] ?? 'Your vehicle';
+    final vehicleModel = data['vehicleInfo']['model'] ?? '';
+    final vehicleYear = data['vehicleInfo']['year'] ?? '';
+    final plateNumber = data['vehicleInfo']['plateNumber'] ?? '';
+    final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
+    final location = data['location']?['customer']?['address']?['full'] ?? 'your location';
 
     final notification = NotificationModel(
-      id: 'towing_${DateTime.now().millisecondsSinceEpoch}',
-      title: 'Towing Request Updated',
-      body: 'Your towing request is now ${_formatStatus(status)}',
+      id: 'towing_${requestId}_${DateTime.now().millisecondsSinceEpoch}',
+      userId: _userId,
+      title: _getTowingRequestTitle(status),
+      body: _getTowingRequestBody(status, vehicleInfo, location, data),
       type: 'towing_request',
       data: {
         'requestId': requestId,
         'status': status,
+        'vehicleInfo': vehicleInfo,
+        'location': location,
       },
       timestamp: DateTime.now(),
     );
@@ -301,20 +331,133 @@ class NotificationListenerService {
   }
 
   void _handleNewTowingRequest(String requestId, Map<String, dynamic> data) {
+    final vehicleMake = data['vehicleInfo']['make'] ?? 'Your vehicle';
+    final vehicleModel = data['vehicleInfo']['model'] ?? '';
+    final vehicleYear = data['vehicleInfo']['year'] ?? '';
+    final plateNumber = data['vehicleInfo']['plateNumber'] ?? '';
+    final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
+    final location = data['location']?['customer']?['address']?['full'] ?? 'your location';
+
     final notification = NotificationModel(
-      id: 'towing_${DateTime.now().millisecondsSinceEpoch}',
-      title: 'Towing Request Created',
-      body: 'Your towing request has been submitted',
+      id: 'towing_${requestId}_${DateTime.now().millisecondsSinceEpoch}',
+      userId: _userId,
+      title: 'Towing Request Received',
+      body: 'Help is on the way! We\'ve received your towing request for $vehicleInfo at $location.',
       type: 'towing_request',
       data: {
         'requestId': requestId,
         'status': data['status'] ?? 'pending',
+        'vehicleInfo': vehicleInfo,
+        'location': location,
       },
       timestamp: DateTime.now(),
     );
 
     _notificationBloc.add(NewNotificationEvent(notification));
     _showLocalNotification(notification);
+  }
+
+  // Improved title and body generators
+  String _getServiceBookingTitle(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Booking Received';
+      case 'confirmed':
+        return 'Booking Confirmed';
+      case 'assigned':
+        return 'Technician Assigned';
+      case 'in_progress':
+        return 'Service In Progress';
+      case 'ready_to_collect':
+        return 'Vehicle Ready for Pickup';
+      case 'invoice_generated':
+        return 'Invoice has generated';
+      case 'completed':
+        return 'Service Completed';
+      case 'cancelled':
+        return 'Booking Cancelled';
+      case 'declined':
+        return 'Booking Declined';
+      default:
+        return 'Service Booking Updated';
+    }
+  }
+
+  String _getServiceBookingBody(String status, String serviceCenterName, String vehicleInfo, String serviceType, Map<String, dynamic> data) {
+    switch (status) {
+      case 'pending':
+        return 'Your service for $vehicleInfo at $serviceCenterName is being processed. We\'ll notify you once confirmed.';
+      case 'confirmed':
+        final scheduledDate = data['scheduledDate'] ?? '';
+        if (scheduledDate != '') {
+          return 'Your service for $vehicleInfo at $serviceCenterName is confirmed for $scheduledDate. Please arrive on time.';
+        }
+        return 'Your service for $vehicleInfo at $serviceCenterName has been confirmed!';
+      case 'assigned':
+        final technician = data['technicianName'] ?? 'a technician';
+        return '$technician has been assigned to your service for $vehicleInfo.';
+      case 'in_progress':
+        return 'Your service for $vehicleInfo is now being worked on. We\'ll update you when complete.';
+      case 'ready_to_collect':
+        return 'Great news! Your $vehicleInfo is ready for pickup at $serviceCenterName.';
+      case 'invoice_generated':
+        return 'Invoice has generated, please review then proceed to payment';
+      case 'completed':
+        return 'Thank you for choosing $serviceCenterName! Your service for $vehicleInfo has been completed successfully.';
+      case 'cancelled':
+        return 'Your booking at $serviceCenterName has been cancelled.';
+      case 'declined':
+        return 'Your booking at $serviceCenterName has been declined.';
+      default:
+        return 'Your service booking status has been updated to ${_formatStatus(status)}.';
+    }
+  }
+
+  String _getTowingRequestTitle(String status) {
+    switch (status) {
+      case 'pending':
+        return 'Towing Request Received';
+      case 'accepted':
+        return 'Towing Request Accepted';
+      case 'dispatched':
+        return 'Dispatching';
+      case 'in_progress':
+        return 'Towing Service is in progress';
+      case 'invoice_generated':
+        return 'Invoice has generated';
+      case 'completed':
+        return 'Towing Completed';
+      case 'cancelled':
+        return 'Towing Cancelled';
+      case 'declined':
+        return 'Towing Request Declined';
+      default:
+        return 'Towing Request Updated';
+    }
+  }
+
+  String _getTowingRequestBody(String status, String vehicleInfo, String location, Map<String, dynamic> data) {
+    switch (status) {
+      case 'pending':
+        return 'We\'re assigning available towing driver near $location for your $vehicleInfo.';
+      case 'assigned':
+        final driverName = data['driverName'] ?? 'a driver';
+        final eta = data['estimatedDuration'] ?? 'shortly';
+        return '$driverName has been assigned to your request. Estimated arrival: $eta.';
+      case 'dispatched':
+        final driverName = data['driverName'] ?? 'Our driver';
+        return '$driverName is on the way to $location';
+      case 'in_progress':
+        return 'Driver Arrived at your location, and service started!';
+      case 'completed':
+        return 'Full payment has received, Towing Service has marked as completed!';
+      case 'cancelled':
+        return 'Your towing request was cancelled';
+      case 'invoice_generated':
+        return 'Invoice has generated, please review then proceed to payment';
+      default:
+        return 'Your towing request status has been updated.';
+    }
   }
 
   Future<void> _showServiceReminderNotification({
@@ -325,6 +468,7 @@ class NotificationListenerService {
   }) async {
     final notification = NotificationModel(
       id: 'service_reminder_${DateTime.now().millisecondsSinceEpoch}',
+      userId: _userId,
       title: title,
       body: body,
       type: type,

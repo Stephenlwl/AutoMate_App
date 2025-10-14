@@ -9,55 +9,63 @@ class NotificationsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Notifications'),
-        backgroundColor: Colors.white,
-        elevation: 0,
-        actions: [
-          BlocBuilder<NotificationBloc, NotificationState>(
-            builder: (context, state) {
-              if (state.notifications.isEmpty) return const SizedBox();
+    return BlocProvider(
+      create: (context) => NotificationBloc(currentUserId: userId),
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Notifications'),
+          backgroundColor: Colors.white,
+          elevation: 0,
+          actions: [
+            BlocBuilder<NotificationBloc, NotificationState>(
+              builder: (context, state) {
+                final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
 
-              return TextButton(
-                onPressed: () {
-                  context.read<NotificationBloc>().add(ClearAllNotificationsEvent());
-                },
-                child: const Text(
-                  'Clear All',
-                  style: TextStyle(color: Colors.red),
+                if (userNotifications.isEmpty) return const SizedBox();
+
+                return TextButton(
+                  onPressed: () {
+                    context.read<NotificationBloc>().add(ClearAllNotificationsEvent());
+                  },
+                  child: const Text(
+                    'Clear All',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+        body: BlocBuilder<NotificationBloc, NotificationState>(
+          builder: (context, state) {
+            // Filter notifications for current user
+            final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
+
+            if (userNotifications.isEmpty) {
+              return const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.notifications_none, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text(
+                      'No notifications yet',
+                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                    ),
+                  ],
                 ),
               );
-            },
-          ),
-        ],
-      ),
-      body: BlocBuilder<NotificationBloc, NotificationState>(
-        builder: (context, state) {
-          if (state.notifications.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.notifications_none, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text(
-                    'No notifications yet',
-                    style: TextStyle(fontSize: 16, color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
-          }
+            }
 
-          return ListView.builder(
-            itemCount: state.notifications.length,
-            itemBuilder: (context, index) {
-              final notification = state.notifications[index];
-              return _NotificationItem(notification: notification);
-            },
-          );
-        },
+            return ListView.builder(
+              itemCount: userNotifications.length,
+              itemBuilder: (context, index) {
+                final notification = userNotifications[index];
+                return _NotificationItem(notification: notification);
+              },
+            );
+          },
+        ),
       ),
     );
   }
@@ -110,7 +118,6 @@ class _NotificationItem extends StatelessWidget {
           context.read<NotificationBloc>().add(
             MarkAsReadEvent(notification.id),
           );
-          _handleNotificationTap(context, notification);
         },
       ),
     );
@@ -121,7 +128,6 @@ class _NotificationItem extends StatelessWidget {
       'service_booking' => Icons.build_circle_outlined,
       'towing_request' => Icons.emergency_outlined,
       'service_reminder' => Icons.notifications_active,
-      'payment' => Icons.payment_outlined,
       _ => Icons.notifications_outlined,
     };
 
@@ -129,17 +135,11 @@ class _NotificationItem extends StatelessWidget {
       'service_booking' => Colors.orange,
       'towing_request' => Colors.red,
       'service_reminder' => Colors.amber,
-      'payment' => Colors.green,
       _ => Colors.blue,
     };
 
     return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        shape: BoxShape.circle,
-      ),
-      child: Icon(icon, color: color, size: 20),
+      child: Icon(icon, color: color, size: 26),
     );
   }
 
@@ -155,20 +155,4 @@ class _NotificationItem extends StatelessWidget {
     return '${timestamp.day}/${timestamp.month}/${timestamp.year}';
   }
 
-  void _handleNotificationTap(BuildContext context, NotificationModel notification) {
-    switch (notification.type) {
-      case 'service_booking':
-        Navigator.pushNamed(context, '/service-booking-details',
-            arguments: {'bookingId': notification.data['bookingId']});
-        break;
-      case 'towing_request':
-        Navigator.pushNamed(context, '/towing-details',
-            arguments: {'requestId': notification.data['requestId']});
-        break;
-      case 'payment':
-        Navigator.pushNamed(context, '/payment-details',
-            arguments: {'paymentId': notification.data['paymentId']});
-        break;
-    }
-  }
 }

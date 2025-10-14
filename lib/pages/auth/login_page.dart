@@ -7,7 +7,8 @@ import 'package:local_auth/local_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  final Function(String userId, String userName, String userEmail)? onLoginSuccess;
+  const LoginPage({super.key, this.onLoginSuccess});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -165,6 +166,21 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
     super.dispose();
   }
 
+  void _handleLoginSuccess(String userId, String userName, String userEmail) {
+    widget.onLoginSuccess?.call(userId, userName, userEmail);
+
+    // Navigate to home
+    Navigator.pushReplacementNamed(
+      context,
+      '/home',
+      arguments: {
+        'userId': userId,
+        'userName': userName,
+        'userEmail': userEmail,
+      },
+    );
+  }
+
   Future<void> _handleLogin() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -263,15 +279,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
               },
             );
           } else {
-            Navigator.pushReplacementNamed(
-              context,
-              '/home',
-              arguments: {
-                'userId': userId,
-                'userName': userName,
-                'userEmail': userEmail,
-              },
-            );
+            _handleLoginSuccess(userId, userName ?? 'User', userEmail ?? '');
           }
         }
       } else {
