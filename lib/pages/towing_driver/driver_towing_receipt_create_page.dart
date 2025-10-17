@@ -249,7 +249,6 @@ class _TowingReceiptCreatePageState extends State<TowingReceiptCreatePage> {
     });
 
     try {
-      await _updatePaymentStatus();
       await _generateReceipt();
 
       CustomSnackBar.show(
@@ -340,63 +339,9 @@ class _TowingReceiptCreatePageState extends State<TowingReceiptCreatePage> {
     return true;
   }
 
-  Future<void> _updatePaymentStatus() async {
-    final totalAmount = (_invoiceData?['totalAmount'] ?? 0).toDouble();
-    final isFullPayment = _amountPaid >= totalAmount;
-    final paymentStatus = isFullPayment ? 'paid' : 'partial';
-    final requestStatus = isFullPayment ? 'completed' : 'pending_payment';
-
-    // Update invoice with payment details
-    final invoiceUpdate = <String, dynamic>{
-      'payment.method': _paymentMethod,
-      'payment.status': paymentStatus,
-      'payment.paidAt': Timestamp.now(),
-      'payment.amountPaid': _amountPaid,
-      'payment.notes': _paymentNotes,
-      'payment.balanceDue': max(0, totalAmount - _amountPaid),
-      'status': paymentStatus,
-      'updatedAt': Timestamp.now(),
-    };
-
-    _addPaymentMethodDetails(invoiceUpdate);
-
-    await _firestore
-        .collection('towing_invoice')
-        .doc(widget.invoiceId)
-        .update(invoiceUpdate);
-
-    final requestUpdate = <String, dynamic>{
-      'receiptId': 'REC-${widget.invoiceId}',
-      'status': requestStatus,
-      'payment.method': _paymentMethod,
-      'payment.status': paymentStatus,
-      'payment.total': _amountPaid,
-      'payment.taxAmount': _invoiceData?['taxAmount'] ?? 0,
-      'payment.additionalFees': _invoiceData?['additionalServicesTotal'] ?? 0,
-      'payment.paidAt': Timestamp.now(),
-      'payment.balanceDue': max(0, totalAmount - _amountPaid),
-      'updatedAt': Timestamp.now(),
-      'statusUpdatedBy': widget.adminName ?? 'system',
-      'totalAmount': totalAmount,
-      'statusHistory': FieldValue.arrayUnion([
-        {
-          'status': 'completed',
-          'timestamp': Timestamp.now(),
-          'updatedBy': widget.userData['name'] ?? 'Driver',
-          'notes': 'Fully payment of RM ${_amountPaid} received. Towing Service completed'
-        }
-      ]),
-      'timestamps': {
-        ..._towingRequest!['timestamps'] ?? {},
-        'invoiceGeneratedAt': Timestamp.now()
-      }
-    };
-
-    await _firestore
-        .collection('towing_requests')
-        .doc(_invoiceData?['towingRequestId'])
-        .update(requestUpdate);
-  }
+  // Future<void> _updatePaymentStatus() async {
+  //
+  // }
 
   void _addPaymentMethodDetails(Map<String, dynamic> updateObject) {
     switch (_paymentMethod) {
@@ -427,12 +372,15 @@ class _TowingReceiptCreatePageState extends State<TowingReceiptCreatePage> {
 
   Future<void> _generateReceipt() async {
     try {
+      final firestore = FirebaseFirestore.instance;
       final totalAmount = (_invoiceData?['totalAmount'] ?? 0).toDouble();
       final isFullPayment = _amountPaid >= totalAmount;
       final paymentStatus = isFullPayment ? 'paid' : 'partial';
+      final receiptRef = firestore.collection('towing_receipts').doc();
+      final receiptId = receiptRef.id;
 
       final receiptData = <String, dynamic>{
-        'receiptId': 'REC-${widget.invoiceId}-${DateTime.now().millisecondsSinceEpoch}',
+        'receiptId': receiptId,
         'invoiceId': widget.invoiceId,
         'towingRequestId': _invoiceData?['towingRequestId'],
         'serviceCenterId': _invoiceData?['serviceCenterId'],
@@ -440,7 +388,7 @@ class _TowingReceiptCreatePageState extends State<TowingReceiptCreatePage> {
 
 
         'customerInfo': _invoiceData?['customerInfo'] ?? {
-          'name': _towingRequest?['customer']?['name'] ?? _towingRequest?['name'],
+          'name': widget.customerName ?? 'N/A',
           'email': _towingRequest?['customer']?['email'] ?? _towingRequest?['email'],
           'phone': _towingRequest?['customer']?['phone'] ?? _towingRequest?['contactNumber'],
         },
@@ -476,9 +424,63 @@ class _TowingReceiptCreatePageState extends State<TowingReceiptCreatePage> {
         'status': paymentStatus,
       };
 
+      final requestStatus = isFullPayment ? 'completed' : 'pending_payment';
+
+      // Update invoice with payment details
+      final invoiceUpdate = <String, dynamic>{
+        'payment.method': _paymentMethod,
+        'payment.status': paymentStatus,
+        'payment.paidAt': Timestamp.now(),
+        'payment.amountPaid': _amountPaid,
+        'payment.notes': _paymentNotes,
+        'payment.balanceDue': max(0, totalAmount - _amountPaid),
+        'status': paymentStatus,
+        'updatedAt': Timestamp.now(),
+      };
+
+      _addPaymentMethodDetails(invoiceUpdate);
+
+      await _firestore
+          .collection('towing_invoice')
+          .doc(widget.invoiceId)
+          .update(invoiceUpdate);
+
+      final requestUpdate = <String, dynamic>{
+        'receiptId': receiptId,
+        'status': requestStatus,
+        'payment.method': _paymentMethod,
+        'payment.status': paymentStatus,
+        'payment.total': _amountPaid,
+        'payment.taxAmount': _invoiceData?['taxAmount'] ?? 0,
+        'payment.additionalFees': _invoiceData?['additionalServicesTotal'] ?? 0,
+        'payment.paidAt': Timestamp.now(),
+        'payment.balanceDue': max(0, totalAmount - _amountPaid),
+        'updatedAt': Timestamp.now(),
+        'statusUpdatedBy': widget.adminName ?? 'system',
+        'totalAmount': totalAmount,
+        'statusHistory': FieldValue.arrayUnion([
+          {
+            'status': 'completed',
+            'timestamp': Timestamp.now(),
+            'updatedBy': widget.userData['name'] ?? 'Driver',
+            'notes': 'Fully payment of RM ${_amountPaid} received. Towing Service completed'
+          }
+        ]),
+        'timestamps': {
+          ..._towingRequest!['timestamps'] ?? {},
+          'invoiceGeneratedAt': Timestamp.now()
+        }
+      };
+
+      await _firestore
+          .collection('towing_requests')
+          .doc(_invoiceData?['towingRequestId'])
+          .update(requestUpdate);
+
       setState(() {
         _receiptData = receiptData;
       });
+      await receiptRef.set(receiptData);
 
       debugPrint('Receipt generated successfully locally');
 

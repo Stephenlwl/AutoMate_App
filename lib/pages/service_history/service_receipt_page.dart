@@ -210,7 +210,7 @@ class _ServiceReceiptPageState extends State<ServiceReceiptPage> {
 
       for (var service in allServices) {
         if (service is Map<String, dynamic>) {
-          final serviceName = service['serviceName'] ?? 'Unknown Service';
+          final serviceName = service['serviceName'] ?? service['parts']['description'] ?? 'Unknown Service';
 
           final servicePartsData = service['parts'];
           List<dynamic> serviceParts = [];

@@ -686,7 +686,11 @@ class _HomepageState extends State<Homepage> {
 
       // Load all vehicles
       if (data['vehicles'] != null) {
-        allVehicles = List<Map<String, dynamic>>.from(data['vehicles'] as List);
+        final allVehiclesFromCarOwner = List<Map<String, dynamic>>.from(data['vehicles'] as List);
+
+        allVehicles = allVehiclesFromCarOwner.where((vehicle) {
+          return vehicle['status']?.toString().toLowerCase() == 'approved';
+        }).toList();
 
         // Find default vehicle or use first vehicle
         currentVehicleIndex = allVehicles.indexWhere(

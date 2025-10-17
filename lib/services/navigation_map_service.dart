@@ -1,4 +1,3 @@
-// navigation_map_service.dart
 import 'package:geolocator/geolocator.dart';
 
 class NavigationMapService {

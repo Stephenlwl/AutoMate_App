@@ -856,6 +856,24 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
                               fontWeight: FontWeight.bold,
                             ),
                           ),
+                          const Spacer(), // This will push the next items to the right
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${widget.center.distance!.toStringAsFixed(1)} km away',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -982,22 +1000,7 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
                 _buildPackagesSection(),
                 const SizedBox(height: 24),
                 _buildReviewsSection(),
-
-                // Distance
-                if (widget.center.distance != null)
-                  _buildInfoSection(
-                    title: 'Distance',
-                    icon: Icons.directions_rounded,
-                    children: [
-                      _buildInfoRow(
-                        Icons.near_me_rounded,
-                        'Distance from you',
-                        '${widget.center.distance!.toStringAsFixed(1)} km away',
-                      ),
-                    ],
-                  ),
-
-                const SizedBox(height: 40),
+                const SizedBox(height: 12),
               ],
             ),
           ),
@@ -1145,10 +1148,10 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
           children: [
             Container(
               padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: AppColors.primaryColor.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
+              // decoration: BoxDecoration(
+              //   color: AppColors.primaryColor.withOpacity(0.1),
+              //   borderRadius: BorderRadius.circular(10),
+              // ),
               child: Icon(icon, color: AppColors.primaryColor, size: 20),
             ),
             const SizedBox(width: 12),
@@ -1181,10 +1184,6 @@ class _ServiceCenterDetailsSheetState extends State<ServiceCenterDetailsSheet> {
         children: [
           Container(
             padding: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: AppColors.textSecondary.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
             child: Icon(icon, size: 18, color: AppColors.textSecondary),
           ),
           const SizedBox(width: 12),

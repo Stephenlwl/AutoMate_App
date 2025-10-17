@@ -1,5 +1,4 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -7,7 +6,7 @@ import 'package:automate_application/widgets/custom_snackbar.dart';
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
-import '../services/navigation_map_service.dart';
+import '../../services/navigation_map_service.dart';
 import 'driver_navigation_map_page.dart';
 import 'driver_towing_invoice_create_page.dart';
 import 'driver_towing_request_info.dart';
@@ -431,6 +430,11 @@ class _DriverHomePageState extends State<DriverHomePage> {
       await _firestore.collection('towing_requests').doc(requestId).update(updateData);
 
       if (mounted) {
+        CustomSnackBar.show(
+          context: context,
+          message: 'Successfully sharing your location with the customer',
+          type: SnackBarType.success,
+        );
       }
     } catch (e) {
       debugPrint('Error sharing location: $e');

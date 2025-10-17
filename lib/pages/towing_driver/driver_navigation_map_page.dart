@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import '../services/navigation_map_service.dart';
+import '../../services/navigation_map_service.dart';
 
 class NavigationMapPage extends StatefulWidget {
   final Map<String, dynamic> request;

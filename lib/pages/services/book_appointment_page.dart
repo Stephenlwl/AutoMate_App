@@ -304,13 +304,14 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
     List<TimeRange> occupiedSlots = [];
 
     try {
-      final query =
-          await FirebaseFirestore.instance
-              .collection('service_bookings')
-              .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
-              .where('scheduledDate', isEqualTo: Timestamp.fromDate(date))
-              .where('status', whereIn: ['pending', 'confirmed', 'in_progress'])
-              .get();
+      final query = await FirebaseFirestore.instance
+          .collection('service_bookings')
+          .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
+          .where('scheduledDate', isEqualTo: Timestamp.fromDate(date))
+          .where('status', whereIn: [
+        'pending', // block pending bookings (no bay assigned yet)
+      ])
+          .get();
 
       for (var doc in query.docs) {
         final data = doc.data();
@@ -370,6 +371,88 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
         (openTime.hour * 60 + openTime.minute);
 
     return totalEstimatedDuration > dailyOperatingMinutes;
+  }
+
+  Future<List<Map<String, dynamic>>> _getAvailableBaysForSlot(
+      DateTime date,
+      TimeOfDay startTime,
+      int duration
+      ) async {
+    try {
+      final baysQuery = await FirebaseFirestore.instance
+          .collection('bays')
+          .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
+          .where('active', isEqualTo: true)
+          .get();
+
+      final List<Map<String, dynamic>> allBays = baysQuery.docs
+          .map((doc) => {
+        'id': doc.id,
+        ...doc.data(),
+      })
+          .toList();
+
+      if (allBays.isEmpty) {
+        return [];
+      }
+
+      // Get all bookings that overlap with the requested time slot
+      final startDateTime = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        startTime.hour,
+        startTime.minute,
+      );
+      final endDateTime = startDateTime.add(Duration(minutes: duration));
+
+      // Only check bookings that are assigned or in progress have bay assignments
+      final bookingsQuery = await FirebaseFirestore.instance
+          .collection('service_bookings')
+          .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
+          .where('scheduledDate', isEqualTo: Timestamp.fromDate(date))
+          .where('status', whereIn: ['assigned', 'in_progress', 'invoice_generated'])
+          .get();
+
+      // Find which bays are occupied during the requested time
+      final Set<String> occupiedBayIds = {};
+
+      for (final bookingDoc in bookingsQuery.docs) {
+        final booking = bookingDoc.data();
+        final bookingTimeStr = booking['scheduledTime'] as String?;
+        final bookingDuration = booking['estimatedDuration'] as int? ?? 60;
+        final bayId = booking['bayId'] as String?;
+
+        if (bookingTimeStr != null && bayId != null) {
+          final timeParts = bookingTimeStr.split(':');
+          final bookingStartTime = TimeOfDay(
+            hour: int.parse(timeParts[0]),
+            minute: int.parse(timeParts[1]),
+          );
+
+          final bookingStartDateTime = DateTime(
+            date.year,
+            date.month,
+            date.day,
+            bookingStartTime.hour,
+            bookingStartTime.minute,
+          );
+          final bookingEndDateTime = bookingStartDateTime.add(Duration(minutes: bookingDuration));
+
+          // Check if time slots overlap
+          if (startDateTime.isBefore(bookingEndDateTime) &&
+              endDateTime.isAfter(bookingStartDateTime)) {
+            occupiedBayIds.add(bayId);
+          }
+        }
+      }
+
+      // Return available bays not in occupiedBayIds
+      return allBays.where((bay) => !occupiedBayIds.contains(bay['id'])).toList();
+    } catch (e) {
+      debugPrint('Error getting available bays: $e');
+      return [];
+    }
   }
 
   Future<void> _generateTimeSlotsForDate(DateTime date) async {
@@ -520,10 +603,10 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
   }
 
   Future<bool> _isMultiDaySlotAvailable(
-    DateTime startDate,
-    TimeOfDay startTime,
-    int daysNeeded,
-  ) async {
+      DateTime startDate,
+      TimeOfDay startTime,
+      int daysNeeded,
+      ) async {
     int remainingDuration = totalEstimatedDuration;
     DateTime currentDate = startDate;
     TimeOfDay currentStartTime = startTime;
@@ -543,7 +626,7 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       ];
       final dayName = dayNames[checkDate.weekday - 1];
       final dayHours = widget.serviceCenter.operatingHours.firstWhere(
-        (hours) => hours['day'] == dayName,
+            (hours) => hours['day'] == dayName,
         orElse: () => {},
       );
 
@@ -556,25 +639,41 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
       // Calculate available time for this day
       final int dayStartMinutes =
-          (day == 0)
-              ? currentStartTime.hour * 60 + currentStartTime.minute
-              : openTime.hour * 60 + openTime.minute;
+      (day == 0)
+          ? currentStartTime.hour * 60 + currentStartTime.minute
+          : openTime.hour * 60 + openTime.minute;
 
       final int dayEndMinutes = closeTime.hour * 60 + closeTime.minute;
       final int availableMinutesToday = dayEndMinutes - dayStartMinutes;
 
-      // Check for conflicts with occupied slots
-      final dayOccupiedSlots = await _getServiceCenterOccupiedSlots(checkDate);
-      for (final occupied in dayOccupiedSlots) {
-        final occupiedStart = occupied.start.hour * 60 + occupied.start.minute;
-        final occupiedEnd = occupied.end.hour * 60 + occupied.end.minute;
+      // Check for pending booking conflicts for this day portion
+      final dayPortionDuration = remainingDuration.clamp(0, availableMinutesToday);
 
-        // Check if our service time conflicts with occupied slot
-        if (dayStartMinutes < occupiedEnd &&
-            (dayStartMinutes +
-                    remainingDuration.clamp(0, availableMinutesToday)) >
-                occupiedStart) {
+      if (dayPortionDuration > 0) {
+        // Check if there are pending bookings that conflict
+        final pendingConflicts = await _hasPendingBookingConflict(
+            checkDate,
+            TimeOfDay(hour: dayStartMinutes ~/ 60, minute: dayStartMinutes % 60),
+            dayPortionDuration
+        );
+
+        if (pendingConflicts) {
           return false;
+        }
+
+        // Check bay availability for assigned bookings
+        final TimeOfDay dayStartTime = (day == 0)
+            ? startTime
+            : openTime;
+
+        final availableBays = await _getAvailableBaysForSlot(
+            checkDate,
+            dayStartTime,
+            dayPortionDuration
+        );
+
+        if (availableBays.isEmpty) {
+          return false; // No available bays for this day portion
         }
       }
 
@@ -589,6 +688,42 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
     return remainingDuration <= 0;
   }
 
+  Future<bool> _hasPendingBookingConflict(DateTime date, TimeOfDay startTime, int duration) async {
+    try {
+      final pendingBookings = await FirebaseFirestore.instance
+          .collection('service_bookings')
+          .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
+          .where('scheduledDate', isEqualTo: Timestamp.fromDate(date))
+          .where('status', isEqualTo: 'pending')
+          .get();
+
+      final startMinutes = startTime.hour * 60 + startTime.minute;
+      final endMinutes = startMinutes + duration;
+
+      for (final doc in pendingBookings.docs) {
+        final booking = doc.data();
+        final bookingTimeStr = booking['scheduledTime'] as String?;
+        final bookingDuration = booking['estimatedDuration'] as int? ?? 60;
+
+        if (bookingTimeStr != null) {
+          final timeParts = bookingTimeStr.split(':');
+          final bookingStartMinutes = int.parse(timeParts[0]) * 60 + int.parse(timeParts[1]);
+          final bookingEndMinutes = bookingStartMinutes + bookingDuration;
+
+          // Check if time slots overlap
+          if (startMinutes < bookingEndMinutes && endMinutes > bookingStartMinutes) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    } catch (e) {
+      debugPrint('Error checking pending conflicts: $e');
+      return true;
+    }
+  }
+
   Future<List<TimeOfDay>> _findSingleDayTimeSlots(DateTime date) async {
     List<TimeOfDay> slots = [];
 
@@ -598,13 +733,19 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
     final serviceCenterHours = await _getServiceCenterHours();
     final occupiedSlots = await _getServiceCenterOccupiedSlots(date);
+    final allBays = await _getAllBays();
+
+    // If no bays available at all, return empty slots
+    if (allBays.isEmpty) {
+      return slots;
+    }
 
     for (
-      int hour = serviceCenterHours['openHour']!;
-      hour <= serviceCenterHours['closeHour']! - 1;
-      hour++
+    int hour = serviceCenterHours['openHour']!;
+    hour <= serviceCenterHours['closeHour']! - 1;
+    hour++
     ) {
-      for (int minute = 0; minute < 60; minute += 60) {
+      for (int minute = 0; minute < 60; minute += 30) {
         final startTime = TimeOfDay(hour: hour, minute: minute);
         final startMinutes = hour * 60 + minute;
         final endMinutes = startMinutes + totalEstimatedDuration;
@@ -612,31 +753,40 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
 
         // Check if slot fits within operating hours
         if (endMinutes <= closeMinutes) {
-          // Check for conflicts with occupied slots
-          bool hasConflict = false;
+          // Check for conflicts with pending bookings
+          bool hasPendingConflict = false;
           for (final occupied in occupiedSlots) {
-            final occupiedStart =
-                occupied.start.hour * 60 + occupied.start.minute;
+            final occupiedStart = occupied.start.hour * 60 + occupied.start.minute;
             final occupiedEnd = occupied.end.hour * 60 + occupied.end.minute;
 
             if (startMinutes < occupiedEnd && endMinutes > occupiedStart) {
-              hasConflict = true;
+              hasPendingConflict = true;
               break;
             }
           }
 
-          if (!hasConflict) {
-            // Check if it's today and time hasn't passed
-            if (date.day == DateTime.now().day &&
-                date.month == DateTime.now().month &&
-                date.year == DateTime.now().year) {
-              TimeOfDay now = TimeOfDay.now();
-              int nowMinutes = now.hour * 60 + now.minute;
-              if (startMinutes > nowMinutes) {
+          // If no pending conflicts, check bay availability for assigned bookings
+          if (!hasPendingConflict) {
+            final availableBays = await _getAvailableBaysForSlot(
+                date,
+                startTime,
+                totalEstimatedDuration
+            );
+
+            // Only add slot if there are available bays
+            if (availableBays.isNotEmpty) {
+              // Check if it's today and time hasn't passed
+              if (date.day == DateTime.now().day &&
+                  date.month == DateTime.now().month &&
+                  date.year == DateTime.now().year) {
+                TimeOfDay now = TimeOfDay.now();
+                int nowMinutes = now.hour * 60 + now.minute;
+                if (startMinutes > nowMinutes) {
+                  slots.add(startTime);
+                }
+              } else {
                 slots.add(startTime);
               }
-            } else {
-              slots.add(startTime);
             }
           }
         }
@@ -644,6 +794,26 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
     }
 
     return slots;
+  }
+
+  Future<List<Map<String, dynamic>>> _getAllBays() async {
+    try {
+      final baysQuery = await FirebaseFirestore.instance
+          .collection('bays')
+          .where('serviceCenterId', isEqualTo: widget.serviceCenter.id)
+          .where('active', isEqualTo: true)
+          .get();
+
+      return baysQuery.docs
+          .map((doc) => {
+        'id': doc.id,
+        ...doc.data(),
+      })
+          .toList();
+    } catch (e) {
+      debugPrint('Error getting all bays: $e');
+      return [];
+    }
   }
 
   void _nextStep() {

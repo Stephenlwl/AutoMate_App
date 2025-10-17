@@ -269,6 +269,7 @@ class _TowingInvoiceCreatePageState extends State<TowingInvoiceCreatePage> {
         'serviceCenterId': _towingRequest!['serviceCenterId'],
         'userId': _towingRequest!['customerId'] ?? _towingRequest!['userId'],
         'customerInfo': {
+          'name': widget.customerName ?? 'N/A',
           'email': _towingRequest!['email'] ?? 'N/A',
           'phone': _towingRequest!['contactNumber'] ?? 'N/A',
         },
@@ -305,6 +306,10 @@ class _TowingInvoiceCreatePageState extends State<TowingInvoiceCreatePage> {
         } : null,
         'additionalServices': _additionalServices,
         'baseTowingCost': baseFee,
+        'distanceCost': distanceCost ?? 0.0,
+        'distanceInKm': pricingBreakdown['distanceInKm'] ?? 0.0,
+        'perKmRate': pricingBreakdown['perKmRate'] ?? 0.0,
+        'luxurySurcharge': luxurySurcharge ?? 0.0,
         'additionalServicesTotal': additionalServicesTotal,
         'subtotal': subtotal,
         'taxAmount': taxAmount,

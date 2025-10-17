@@ -1324,8 +1324,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         tooltip: 'Add Review',
                       ),
 
-                    // Invoice button for completed services
-                    if (isCompleted && booking['invoiceId'] != null)
+                    if (booking['invoiceId'] != null)
                       IconButton(
                         onPressed: () {
                           Navigator.push(
@@ -1568,7 +1567,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         child: Row(
                           children: [
                             // Invoice Button for completed services
-                            if (isCompleted && booking['invoiceId'] != null)
+                            if (booking['invoiceId'] != null)
                               Expanded(
                                 child: ElevatedButton.icon(
                                   onPressed: () {

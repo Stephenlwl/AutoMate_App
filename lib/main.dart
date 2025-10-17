@@ -93,6 +93,24 @@ class _MyAppState extends State<MyApp> {
             },
           ),
           routes: {
+            '/driver/home': (context) {
+              final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
+              final userId = args?['userId'] as String?;
+              final userName = args?['userName'] as String?;
+              final userEmail = args?['userEmail'] as String?;
+              final userData = args?['userData'] as Map<String, dynamic>?;
+
+              if (userId == null) {
+                return const Scaffold(
+                  body: Center(child: Text('Driver ID is missing. Please restart the app.')),
+                );
+              }
+
+              return DriverHomePage(
+                userData: userData,
+                userId: userId,
+              );
+            },
             '/home': (context) {
               final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
               final userId = args?['userId'] as String?;
@@ -113,26 +131,6 @@ class _MyAppState extends State<MyApp> {
                 userName: userName,
                 userEmail: userEmail,
                 notificationBloc: notificationBloc,
-              );
-            },
-            '/driver/home': (context) {
-              final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
-              final userId = args?['userId'] as String?;
-              final userName = args?['userName'] as String?;
-              final userEmail = args?['userEmail'] as String?;
-              final userData = args?['userData'] as Map<String, dynamic>?;
-
-              if (userId == null) {
-                return const Scaffold(
-                  body: Center(child: Text('Driver ID is missing. Please restart the app.')),
-                );
-              }
-              final notificationBloc = context.read<NotificationBloc>();
-              notificationBloc.updateUserId(userId);
-
-              return DriverHomePage(
-                userData: userData,
-                userId: userId,
               );
             },
             '/support-chat': (context) {
