@@ -110,45 +110,52 @@ class _HomepageState extends State<Homepage> {
   bool _remindersChecked = false;
   int _unreadNotificationCount = 0;
   late NotificationBloc _notificationBloc;
-
-  // Location
+  StreamSubscription? _notificationSubscription;
   String? currentLocation;
-
   bool loading = true;
 
   @override
   void initState() {
     super.initState();
     _notificationBloc = context.read<NotificationBloc>();
+    _initializeNotificationService();
     _initializeChat();
     _loadAll();
-    _startNotificationListening();
     _loadShownReminders();
     _initializeRealTimeListeners();
-    _initializeNotificationListener();
   }
 
-  void _startNotificationListening() {
-    final notificationService = NotificationListenerService(_notificationBloc, widget.userId);
-    notificationService.startListening();
-  }
+  void _initializeNotificationService() {
+    // Initialize the notification service with the bloc
+    final notificationService = NotificationService();
+    notificationService.initialize(
+      _notificationBloc!,
+      userId: widget.userId,
+      userName: widget.userName,
+      userEmail: widget.userEmail,
+    );
 
-  void _initializeNotificationListener() {
     // Listen for notification state changes
-    _notificationBloc.stream.listen((state) {
+    _notificationSubscription = _notificationBloc.stream.distinct().listen((state) {
       if (mounted) {
-        setState(() {
-          _unreadNotificationCount = state.notifications
-              .where((notification) =>
-          notification.userId == widget.userId &&
-              !notification.isRead)
-              .length;
-        });
+        final userUnreadCount = state.notifications
+            .where((notification) =>
+        notification.userId == widget.userId &&
+            !notification.isRead)
+            .length;
+
+        if (userUnreadCount != _unreadNotificationCount) {
+          setState(() {
+            _unreadNotificationCount = userUnreadCount;
+          });
+        }
       }
     });
 
     // Load initial notifications
-    _notificationBloc.add(LoadNotificationsEvent());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _notificationBloc.add(LoadNotificationsEvent());
+    });
   }
 
   void _initializeRealTimeListeners() {
@@ -607,19 +614,24 @@ class _HomepageState extends State<Homepage> {
               title,
               style: TextStyle(
                 fontWeight: FontWeight.bold,
-                color: isUrgent ? Colors.red : Colors.white,
+                color: isUrgent ? Colors.white : Colors.white,
               ),
             ),
-            Text(message),
+            Text(
+              message,
+              style: TextStyle(
+                color: isUrgent ? Colors.white : Colors.white.withOpacity(0.9),
+              ),
+            ),
           ],
         ),
-        backgroundColor:
-            isUrgent
-                ? Colors.red.shade50
-                : AppColors.primaryColor.withOpacity(0.9),
+        backgroundColor: isUrgent
+            ? Colors.orange.shade700  // Orange for warnings
+            : AppColors.primaryColor,
         action: SnackBarAction(
           label: 'Book Now',
-          textColor: Colors.deepOrange,
+          textColor: Colors.white,
+          backgroundColor: isUrgent ? Colors.orange.shade900 : Colors.deepOrange.shade700,
           onPressed: () {
             Navigator.pushNamed(
               context,
@@ -686,11 +698,14 @@ class _HomepageState extends State<Homepage> {
 
       // Load all vehicles
       if (data['vehicles'] != null) {
-        final allVehiclesFromCarOwner = List<Map<String, dynamic>>.from(data['vehicles'] as List);
+        final allVehiclesFromCarOwner = List<Map<String, dynamic>>.from(
+          data['vehicles'] as List,
+        );
 
-        allVehicles = allVehiclesFromCarOwner.where((vehicle) {
-          return vehicle['status']?.toString().toLowerCase() == 'approved';
-        }).toList();
+        allVehicles =
+            allVehiclesFromCarOwner.where((vehicle) {
+              return vehicle['status']?.toString().toLowerCase() == 'approved';
+            }).toList();
 
         // Find default vehicle or use first vehicle
         currentVehicleIndex = allVehicles.indexWhere(
@@ -1361,6 +1376,7 @@ class _HomepageState extends State<Homepage> {
 
   @override
   void dispose() {
+    _notificationSubscription?.cancel();
     _appointmentSubscription?.cancel();
     _towingSubscription?.cancel();
     _vehicleSubscription?.cancel();
@@ -1512,22 +1528,32 @@ class _HomepageState extends State<Homepage> {
         ],
       ),
       actions: [
-        NotificationBadge(
-          count: _unreadNotificationCount,
-          icon: Container(
-            padding: const EdgeInsets.all(8),
-            child: const Icon(
-              Icons.notifications_outlined,
-              color: AppColors.secondaryColor,
-              size: 20,
-            ),
-          ),
-          onPressed: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => NotificationsPage(userId: widget.userId),
+        BlocBuilder<NotificationBloc, NotificationState>(
+          builder: (context, state) {
+            final unreadCount = state.notifications
+                .where((notification) =>
+            notification.userId == widget.userId &&
+                !notification.isRead)
+                .length;
+
+            return NotificationBadge(
+              count: unreadCount,
+              icon: Container(
+                padding: const EdgeInsets.all(8),
+                child: const Icon(
+                  Icons.notifications_outlined,
+                  color: AppColors.secondaryColor,
+                  size: 20,
+                ),
               ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => NotificationsPage(userId: widget.userId),
+                  ),
+                );
+              },
             );
           },
         ),
@@ -2101,8 +2127,7 @@ class _HomepageState extends State<Homepage> {
               children: [
                 Text(
                   '(${_getDaysRemaining(nextServiceDate)})',
-                  style: TextStyle(fontSize: 12,
-                  color: AppColors.errorColor),
+                  style: TextStyle(fontSize: 12, color: AppColors.errorColor),
                 ),
               ],
             ),
@@ -2281,8 +2306,10 @@ class _HomepageState extends State<Homepage> {
                             context,
                             MaterialPageRoute(
                               builder:
-                                  (context) =>
-                                      MyVehiclesPage(userId: widget.userId, userName: widget.userName),
+                                  (context) => MyVehiclesPage(
+                                    userId: widget.userId,
+                                    userName: widget.userName,
+                                  ),
                             ),
                           );
                         }
@@ -2856,11 +2883,11 @@ class _HomepageState extends State<Homepage> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
             color:
-            daysUntilService <= 7
-                ? Colors.red.withOpacity(0.1)
-                : daysUntilService <= 30
-                ? Colors.orange.withOpacity(0.1)
-                : Colors.green.withOpacity(0.1),
+                daysUntilService <= 7
+                    ? Colors.red.withOpacity(0.1)
+                    : daysUntilService <= 30
+                    ? Colors.orange.withOpacity(0.1)
+                    : Colors.green.withOpacity(0.1),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Row(
@@ -2874,11 +2901,11 @@ class _HomepageState extends State<Homepage> {
                     : Icons.check_circle,
                 size: 14,
                 color:
-                daysUntilService <= 7
-                    ? Colors.red
-                    : daysUntilService <= 30
-                    ? Colors.orange
-                    : Colors.green,
+                    daysUntilService <= 7
+                        ? Colors.red
+                        : daysUntilService <= 30
+                        ? Colors.orange
+                        : Colors.green,
               ),
               const SizedBox(width: 4),
               Text(
@@ -2889,11 +2916,11 @@ class _HomepageState extends State<Homepage> {
                     : 'Reminder',
                 style: TextStyle(
                   color:
-                  daysUntilService <= 7
-                      ? Colors.red
-                      : daysUntilService <= 30
-                      ? Colors.orange
-                      : Colors.green,
+                      daysUntilService <= 7
+                          ? Colors.red
+                          : daysUntilService <= 30
+                          ? Colors.orange
+                          : Colors.green,
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
                 ),
@@ -2973,8 +3000,10 @@ class _HomepageState extends State<Homepage> {
             context,
             MaterialPageRoute(
               builder:
-                  (context) =>
-                  MyVehiclesPage(userId: widget.userId, userName: widget.userName,),
+                  (context) => MyVehiclesPage(
+                    userId: widget.userId,
+                    userName: widget.userName,
+                  ),
             ),
           );
         }

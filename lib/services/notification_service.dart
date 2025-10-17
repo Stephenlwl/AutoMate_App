@@ -21,6 +21,7 @@ class NotificationService {
   String? _currentUserName;
   String? _currentUserEmail;
   NotificationBloc? _notificationBloc;
+  final Set<String> _shownNotificationIds = {};
 
   // Initialize notifications with user data
   Future<void> initialize(
@@ -130,15 +131,16 @@ class NotificationService {
       currentUserId: _currentUserId ?? '',
     );
 
-    // Only show and process if it belongs to current user
+    // Only process if it belongs to current user
     if (notification.userId == _currentUserId) {
-      _showLocalNotification(notification);
+      _notificationBloc?.add(NewNotificationEvent(
+        notification,
+        shouldShowPopup: true,
+      ));
     }
   }
 
   void _onBackgroundMessageOpened(RemoteMessage message) {
-    debugPrint('App opened from background: ${message.messageId}');
-
     final notification = NotificationModel.fromRemoteMessage(
       message,
       currentUserId: _currentUserId ?? '',
@@ -150,7 +152,6 @@ class NotificationService {
   }
 
   void _onNotificationTap(NotificationResponse response) {
-    debugPrint('Notification tapped: ${response.payload}');
 
     final payload = response.payload;
     if (payload != null) {
@@ -168,7 +169,11 @@ class NotificationService {
     }
   }
 
-  Future<void> _showLocalNotification(NotificationModel notification) async {
+  Future<void> showLocalNotification(NotificationModel notification) async {
+    if (_shownNotificationIds.contains(notification.id)) {
+      return;
+    }
+
     try {
       const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
         'automate_channel',
@@ -193,6 +198,14 @@ class NotificationService {
         details,
         payload: json.encode(notification.toJson()),
       );
+
+      // Mark as shown
+      _shownNotificationIds.add(notification.id);
+
+      // Clean up old IDs to prevent memory issues
+      if (_shownNotificationIds.length > 100) {
+        _shownNotificationIds.clear();
+      }
 
       debugPrint('Local notification shown: ${notification.title}');
     } catch (e) {
@@ -268,12 +281,12 @@ class NotificationService {
     await _firebaseMessaging.unsubscribeFromTopic('towing_requests');
   }
 
-  // Add this missing method
   void stopListening() {
     _listenerService?.stopListening();
     _currentUserId = null;
     _currentUserName = null;
     _currentUserEmail = null;
+    _shownNotificationIds.clear();
   }
 
   // Clean up when user logs out

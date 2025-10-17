@@ -9,63 +9,60 @@ class NotificationsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (context) => NotificationBloc(currentUserId: userId),
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Notifications'),
-          backgroundColor: Colors.white,
-          elevation: 0,
-          actions: [
-            BlocBuilder<NotificationBloc, NotificationState>(
-              builder: (context, state) {
-                final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Notifications'),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        actions: [
+          BlocBuilder<NotificationBloc, NotificationState>(
+            builder: (context, state) {
+              final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
 
-                if (userNotifications.isEmpty) return const SizedBox();
+              if (userNotifications.isEmpty) return const SizedBox();
 
-                return TextButton(
-                  onPressed: () {
-                    context.read<NotificationBloc>().add(ClearAllNotificationsEvent());
-                  },
-                  child: const Text(
-                    'Clear All',
-                    style: TextStyle(color: Colors.red),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        body: BlocBuilder<NotificationBloc, NotificationState>(
-          builder: (context, state) {
-            // Filter notifications for current user
-            final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
-
-            if (userNotifications.isEmpty) {
-              return const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.notifications_none, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'No notifications yet',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
-                    ),
-                  ],
+              return TextButton(
+                onPressed: () {
+                  context.read<NotificationBloc>().add(ClearAllNotificationsEvent());
+                },
+                child: const Text(
+                  'Clear All',
+                  style: TextStyle(color: Colors.red),
                 ),
               );
-            }
+            },
+          ),
+        ],
+      ),
+      body: BlocBuilder<NotificationBloc, NotificationState>(
+        builder: (context, state) {
+          // Filter notifications for current user
+          final userNotifications = state.notifications.where((n) => n.userId == userId).toList();
 
-            return ListView.builder(
-              itemCount: userNotifications.length,
-              itemBuilder: (context, index) {
-                final notification = userNotifications[index];
-                return _NotificationItem(notification: notification);
-              },
+          if (userNotifications.isEmpty) {
+            return const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.notifications_none, size: 64, color: Colors.grey),
+                  SizedBox(height: 16),
+                  Text(
+                    'No notifications yet',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
+                  ),
+                ],
+              ),
             );
-          },
-        ),
+          }
+
+          return ListView.builder(
+            itemCount: userNotifications.length,
+            itemBuilder: (context, index) {
+              final notification = userNotifications[index];
+              return _NotificationItem(notification: notification);
+            },
+          );
+        },
       ),
     );
   }
@@ -154,5 +151,4 @@ class _NotificationItem extends StatelessWidget {
 
     return '${timestamp.day}/${timestamp.month}/${timestamp.year}';
   }
-
 }

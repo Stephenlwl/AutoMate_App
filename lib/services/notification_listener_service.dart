@@ -12,25 +12,59 @@ class NotificationListenerService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final NotificationBloc _notificationBloc;
   final String _userId;
-
+  bool _isListening = false;
   List<StreamSubscription<dynamic>> _subscriptions = [];
-  final Map<String, DateTime> _processedNotifications = {};
+  final Map<String, DateTime> _lastNotificationTime = {};
   static const Duration _deduplicationWindow = Duration(minutes: 2);
+  final Map<String, DateTime> _processedNotifications = {};
 
   NotificationListenerService(this._notificationBloc, this._userId);
 
   void startListening() {
+    if (_isListening) return;
+    _isListening = true;
+
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      _handleFirebaseNotification(message);
+    });
+
     _listenToServiceBookings();
     _listenToTowingRequests();
     _checkServiceMaintenanceReminders();
   }
 
-  void stopListening() {
-    for (var subscription in _subscriptions) {
-      subscription.cancel();
+  void _handleFirebaseNotification(RemoteMessage message) {
+    final notification = NotificationModel.fromRemoteMessage(
+        message,
+        currentUserId: _userId
+    );
+
+    // Check if recently processed a similar notification
+    if (_shouldProcessNotification('fcm_${notification.title}_${notification.body}')) {
+      _notificationBloc.add(NewNotificationEvent(
+        notification,
+        shouldShowPopup: true,
+      ));
     }
-    _subscriptions.clear();
-    _processedNotifications.clear();
+  }
+
+  bool _shouldProcessNotification(String notificationKey) {
+    final now = DateTime.now();
+    final lastTime = _lastNotificationTime[notificationKey];
+
+    // Clean old entries
+    _lastNotificationTime.removeWhere((key, time) {
+      return now.difference(time) > _deduplicationWindow;
+    });
+
+    // If recently processed then skip
+    if (lastTime != null && now.difference(lastTime) < _deduplicationWindow) {
+      return false;
+    }
+
+    // Mark as processed
+    _lastNotificationTime[notificationKey] = now;
+    return true;
   }
 
   void _listenToServiceBookings() {
@@ -40,7 +74,6 @@ class NotificationListenerService {
         .snapshots()
         .listen((QuerySnapshot snapshot) {
       for (var change in snapshot.docChanges) {
-        // Only process modifications and additions
         if (change.type == DocumentChangeType.modified ||
             change.type == DocumentChangeType.added) {
           final data = change.doc.data() as Map<String, dynamic>;
@@ -58,7 +91,7 @@ class NotificationListenerService {
           final updatedAt = (data['updatedAt'] as Timestamp?)?.toDate() ??
               DateTime.now();
 
-          if (_shouldProcessNotification(bookingId, updatedAt)) {
+          if (_shouldProcessNotification('service_$bookingId')) {
             if (change.type == DocumentChangeType.added) {
               _handleNewServiceBooking(bookingId, data);
             } else {
@@ -94,7 +127,7 @@ class NotificationListenerService {
               (data['createdAt'] as Timestamp?)?.toDate() ??
               DateTime.now();
 
-          if (_shouldProcessNotification(requestId, timestamp)) {
+          if (_shouldProcessNotification('towing_$requestId')) {
             if (change.type == DocumentChangeType.added) {
               _handleNewTowingRequest(requestId, data);
             } else {
@@ -106,140 +139,6 @@ class NotificationListenerService {
     });
 
     _subscriptions.add(subscription);
-  }
-
-  bool _shouldProcessNotification(String docId, DateTime timestamp) {
-    final now = DateTime.now();
-    final key = '$docId-${timestamp.millisecondsSinceEpoch}';
-
-    // Clean old entries first
-    _processedNotifications.removeWhere((key, processedTime) {
-      return now.difference(processedTime) > _deduplicationWindow;
-    });
-
-    // Check if recently processed this
-    if (_processedNotifications.containsKey(key)) {
-      return false;
-    }
-
-    // Mark as processed
-    _processedNotifications[key] = now;
-    return true;
-  }
-
-  void _checkServiceMaintenanceReminders() {
-    final subscription = _firestore
-        .collection('car_owners')
-        .doc(_userId)
-        .snapshots()
-        .listen((doc) async {
-      if (doc.exists) {
-        final data = doc.data()!;
-        final vehicles = data['vehicles'] as List? ?? [];
-
-        for (var vehicle in vehicles) {
-          final serviceMaintenances = vehicle['serviceMaintenances'] as List? ?? [];
-          await _checkVehicleServiceReminders(serviceMaintenances, vehicle);
-        }
-      }
-    });
-
-    _subscriptions.add(subscription);
-  }
-
-  Future<void> _checkVehicleServiceReminders(
-      List<dynamic> serviceMaintenances,
-      Map<String, dynamic> vehicle
-      ) async {
-    final currentMileage = vehicle['lastServiceMileage'] as int? ?? 0;
-    final vehicleInfo = '${vehicle['make']} ${vehicle['model']} ${vehicle['plateNumber']}';
-
-    for (var maintenance in serviceMaintenances) {
-      final maintenanceMap = maintenance as Map<String, dynamic>;
-      await _checkSingleServiceReminder(maintenanceMap, currentMileage, vehicleInfo);
-    }
-  }
-
-  Future<void> _checkSingleServiceReminder(
-      Map<String, dynamic> maintenance,
-      int currentMileage,
-      String vehicleInfo
-      ) async {
-    final serviceType = maintenance['serviceType'] as String? ?? 'Service';
-    final nextServiceMileage = maintenance['nextServiceMileage'] as int?;
-    final nextServiceDate = maintenance['nextServiceDate'] as String?;
-
-    // Check mileage-based reminder
-    if (nextServiceMileage != null && currentMileage > 0) {
-      final mileageDifference = nextServiceMileage - currentMileage;
-      if (mileageDifference <= 500 && mileageDifference > 0) {
-        await _showServiceReminderNotification(
-          title: 'Service Due Soon - $vehicleInfo',
-          body: 'Your $serviceType is due in $mileageDifference km. Book your service now!',
-          type: 'service_reminder',
-          data: {
-            'serviceType': serviceType,
-            'vehicleInfo': vehicleInfo,
-            'currentMileage': currentMileage,
-            'dueMileage': nextServiceMileage,
-            'reminderType': 'mileage',
-          },
-        );
-      } else if (mileageDifference <= 0) {
-        await _showServiceReminderNotification(
-          title: 'Service Overdue - $vehicleInfo',
-          body: 'Your $serviceType is ${mileageDifference.abs()} km overdue. Please schedule service immediately.',
-          type: 'service_reminder',
-          data: {
-            'serviceType': serviceType,
-            'vehicleInfo': vehicleInfo,
-            'currentMileage': currentMileage,
-            'dueMileage': nextServiceMileage,
-            'reminderType': 'overdue_mileage',
-          },
-        );
-      }
-    }
-
-    if (nextServiceDate != null) {
-      try {
-        final dueDate = DateTime.parse(nextServiceDate);
-        final now = DateTime.now();
-        final daysUntilDue = dueDate.difference(now).inDays;
-
-        if (daysUntilDue <= 7 && daysUntilDue >= 0) {
-          await _showServiceReminderNotification(
-            title: 'Service Appointment - $vehicleInfo',
-            body: 'Your $serviceType is due in $daysUntilDue days. Get ready for your appointment!',
-            type: 'service_reminder',
-            data: {
-              'serviceType': serviceType,
-              'vehicleInfo': vehicleInfo,
-              'dueDate': nextServiceDate,
-              'daysUntilDue': daysUntilDue,
-              'reminderType': 'date',
-            },
-          );
-        }
-
-        if (daysUntilDue < 0) {
-          await _showServiceReminderNotification(
-            title: 'Service Overdue - $vehicleInfo',
-            body: 'Your $serviceType is ${daysUntilDue.abs()} days overdue. Please contact your service center.',
-            type: 'service_reminder',
-            data: {
-              'serviceType': serviceType,
-              'vehicleInfo': vehicleInfo,
-              'dueDate': nextServiceDate,
-              'daysOverdue': daysUntilDue.abs(),
-              'reminderType': 'overdue_date',
-            },
-          );
-        }
-      } catch (e) {
-        debugPrint('Error parsing service date: $e');
-      }
-    }
   }
 
   void _handleServiceBookingUpdate(String bookingId, Map<String, dynamic> data) {
@@ -263,13 +162,15 @@ class NotificationListenerService {
           'userId': _userId,
           'status': status,
           'serviceCenterId': serviceCenterId,
-          'vehicleInfo': '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim()
+          'vehicleInfo': vehicleInfo
         },
         timestamp: DateTime.now(),
       );
 
-      _notificationBloc.add(NewNotificationEvent(notification));
-      _showLocalNotification(notification);
+      _notificationBloc.add(NewNotificationEvent(
+        notification,
+        shouldShowPopup: true,
+      ));
     });
   }
 
@@ -286,7 +187,7 @@ class NotificationListenerService {
         id: 'service_${bookingId}_${DateTime.now().millisecondsSinceEpoch}',
         userId: _userId,
         title: 'Booking Confirmed',
-        body: 'Your for $vehicleInfo at $serviceCenterName has been received. We\'ll confirm shortly.',
+        body: 'Your booking for $vehicleInfo at $serviceCenterName has been received. We\'ll confirm shortly.',
         type: 'service_booking',
         data: {
           'bookingId': bookingId,
@@ -297,8 +198,10 @@ class NotificationListenerService {
         timestamp: DateTime.now(),
       );
 
-      _notificationBloc.add(NewNotificationEvent(notification));
-      _showLocalNotification(notification);
+      _notificationBloc.add(NewNotificationEvent(
+        notification,
+        shouldShowPopup: true,
+      ));
     });
   }
 
@@ -326,8 +229,10 @@ class NotificationListenerService {
       timestamp: DateTime.now(),
     );
 
-    _notificationBloc.add(NewNotificationEvent(notification));
-    _showLocalNotification(notification);
+    _notificationBloc.add(NewNotificationEvent(
+      notification,
+      shouldShowPopup: true,
+    ));
   }
 
   void _handleNewTowingRequest(String requestId, Map<String, dynamic> data) {
@@ -353,11 +258,12 @@ class NotificationListenerService {
       timestamp: DateTime.now(),
     );
 
-    _notificationBloc.add(NewNotificationEvent(notification));
-    _showLocalNotification(notification);
+    _notificationBloc.add(NewNotificationEvent(
+      notification,
+      shouldShowPopup: true,
+    ));
   }
 
-  // Improved title and body generators
   String _getServiceBookingTitle(String status) {
     switch (status) {
       case 'pending':
@@ -476,11 +382,143 @@ class NotificationListenerService {
       timestamp: DateTime.now(),
     );
 
-    // Add to Bloc state
-    _notificationBloc.add(NewNotificationEvent(notification));
+    _notificationBloc.add(NewNotificationEvent(
+      notification,
+      shouldShowPopup: true,
+    ));
+  }
 
-    // Show local notification
-    await _showLocalNotification(notification);
+  void stopListening() {
+    if (!_isListening) return;
+
+    _isListening = false;
+
+    // Cancel all subscriptions
+    for (var subscription in _subscriptions) {
+      subscription.cancel();
+    }
+    _subscriptions.clear();
+
+    // Clear processed notifications
+    _processedNotifications.clear();
+    _lastNotificationTime.clear();
+
+    debugPrint('NotificationListenerService stopped listening');
+  }
+
+  void _checkServiceMaintenanceReminders() {
+    final subscription = _firestore
+        .collection('car_owners')
+        .doc(_userId)
+        .snapshots()
+        .listen((doc) async {
+      if (doc.exists) {
+        final data = doc.data()!;
+        final vehicles = data['vehicles'] as List? ?? [];
+
+        for (var vehicle in vehicles) {
+          final serviceMaintenances = vehicle['serviceMaintenances'] as List? ?? [];
+          await _checkVehicleServiceReminders(serviceMaintenances, vehicle);
+        }
+      }
+    });
+
+    _subscriptions.add(subscription);
+  }
+
+  Future<void> _checkVehicleServiceReminders(
+      List<dynamic> serviceMaintenances,
+      Map<String, dynamic> vehicle
+      ) async {
+    final currentMileage = vehicle['lastServiceMileage'] as int? ?? 0;
+    final vehicleInfo = '${vehicle['make']} ${vehicle['model']} ${vehicle['plateNumber']}';
+
+    for (var maintenance in serviceMaintenances) {
+      final maintenanceMap = maintenance as Map<String, dynamic>;
+      await _checkSingleServiceReminder(maintenanceMap, currentMileage, vehicleInfo);
+    }
+  }
+
+  Future<void> _checkSingleServiceReminder(
+      Map<String, dynamic> maintenance,
+      int currentMileage,
+      String vehicleInfo
+      ) async {
+    final serviceType = maintenance['serviceType'] as String? ?? 'Service';
+    final nextServiceMileage = maintenance['nextServiceMileage'] as int?;
+    final nextServiceDate = maintenance['nextServiceDate'] as String?;
+
+    // Check mileage-based reminder
+    if (nextServiceMileage != null && currentMileage > 0) {
+      final mileageDifference = nextServiceMileage - currentMileage;
+      if (mileageDifference <= 500 && mileageDifference > 0) {
+        await _showServiceReminderNotification(
+          title: 'Service Due Soon - $vehicleInfo',
+          body: 'Your $serviceType is due in $mileageDifference km. Book your service now!',
+          type: 'service_reminder',
+          data: {
+            'serviceType': serviceType,
+            'vehicleInfo': vehicleInfo,
+            'currentMileage': currentMileage,
+            'dueMileage': nextServiceMileage,
+            'reminderType': 'mileage',
+          },
+        );
+      } else if (mileageDifference <= 0) {
+        await _showServiceReminderNotification(
+          title: 'Service Overdue - $vehicleInfo',
+          body: 'Your $serviceType is ${mileageDifference.abs()} km overdue. Please schedule service immediately.',
+          type: 'service_reminder',
+          data: {
+            'serviceType': serviceType,
+            'vehicleInfo': vehicleInfo,
+            'currentMileage': currentMileage,
+            'dueMileage': nextServiceMileage,
+            'reminderType': 'overdue_mileage',
+          },
+        );
+      }
+    }
+
+    if (nextServiceDate != null) {
+      try {
+        final dueDate = DateTime.parse(nextServiceDate);
+        final now = DateTime.now();
+        final daysUntilDue = dueDate.difference(now).inDays;
+
+        if (daysUntilDue <= 7 && daysUntilDue >= 0) {
+          await _showServiceReminderNotification(
+            title: 'Service Appointment - $vehicleInfo',
+            body: 'Your $serviceType is due in $daysUntilDue days. Get ready for your appointment!',
+            type: 'service_reminder',
+            data: {
+              'serviceType': serviceType,
+              'vehicleInfo': vehicleInfo,
+              'dueDate': nextServiceDate,
+              'daysUntilDue': daysUntilDue,
+              'reminderType': 'date',
+            },
+          );
+        }
+
+        if (daysUntilDue < 0) {
+          await _showServiceReminderNotification(
+            title: 'Service Overdue - $vehicleInfo',
+            body: 'Your $serviceType is ${daysUntilDue.abs()} days overdue. Please contact your service center.',
+            type: 'service_reminder',
+            data: {
+              'serviceType': serviceType,
+              'vehicleInfo': vehicleInfo,
+              'dueDate': nextServiceDate,
+              'daysOverdue': daysUntilDue.abs(),
+              'reminderType': 'overdue_date',
+            },
+          );
+        }
+      } catch (e) {
+        debugPrint('Error parsing service date: $e');
+      }
+    }
   }
 
   Future<String> _getServiceCenterName(String serviceCenterId) async {
@@ -514,39 +552,6 @@ class NotificationListenerService {
       case 'completed': return 'Completed';
       case 'cancelled': return 'Cancelled';
       default: return status;
-    }
-  }
-
-  Future<void> _showLocalNotification(NotificationModel notification) async {
-    try {
-      const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-        'automate_channel',
-        'AutoMate Notifications',
-        channelDescription: 'Notifications for service bookings and towing requests',
-        importance: Importance.high,
-        priority: Priority.high,
-        colorized: true,
-        color: Color(0xFFFF6B00),
-      );
-
-      const DarwinNotificationDetails iosDetails = DarwinNotificationDetails();
-
-      const NotificationDetails details = NotificationDetails(
-        android: androidDetails,
-        iOS: iosDetails,
-      );
-
-      await FlutterLocalNotificationsPlugin().show(
-        notification.id.hashCode,
-        notification.title,
-        notification.body,
-        details,
-        payload: json.encode(notification.toJson()),
-      );
-
-      debugPrint('Local notification shown: ${notification.title}');
-    } catch (e) {
-      debugPrint('Error showing local notification: $e');
     }
   }
 }

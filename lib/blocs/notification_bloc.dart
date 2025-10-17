@@ -1,7 +1,9 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:automate_application/model/notification_model.dart';
 import 'dart:convert';
+import '../services/notification_service.dart';
 
 abstract class NotificationEvent {}
 
@@ -87,33 +89,32 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     if (state.notifications.isEmpty && state.shownNotificationIds.isEmpty) {
       await _loadPersistedData();
     }
-
-    final existingIndex = state.notifications.indexWhere((n) =>
-    n.id == event.notification.id ||
-        _isDuplicateNotification(n, event.notification)
+    final isDuplicate = state.notifications.any((existing) =>
+        _isStrictDuplicate(existing, event.notification)
     );
-
-    final hasBeenShown = state.shownNotificationIds.contains(event.notification.id);
+    if (isDuplicate) {
+      return;
+    }
 
     List<NotificationModel> updatedNotifications;
     List<String> updatedShownIds = List.from(state.shownNotificationIds);
 
-    if (existingIndex != -1) {
-      updatedNotifications = List.from(state.notifications);
-      updatedNotifications[existingIndex] = event.notification;
-    } else {
-      updatedNotifications = [event.notification, ...state.notifications];
+    // Add as new notification at the beginning of the list
+    updatedNotifications = [event.notification, ...state.notifications];
 
-      if (event.shouldShowPopup && !hasBeenShown) {
-        updatedShownIds.add(event.notification.id);
-      }
-
-      if (updatedNotifications.length > 50) {
-        updatedNotifications = updatedNotifications.sublist(0, 50);
-      }
+    // Mark as shown if it should show popup
+    if (event.shouldShowPopup && !updatedShownIds.contains(event.notification.id)) {
+      updatedShownIds.add(event.notification.id);
+      _showLocalNotification(event.notification);
     }
 
-    final unreadCount = updatedNotifications.where((n) => !n.isRead).length;
+    if (updatedNotifications.length > 50) {
+      updatedNotifications = updatedNotifications.sublist(0, 50);
+    }
+
+    // Calculate unread count ONLY for current user
+    final userNotifications = updatedNotifications.where((n) => n.userId == currentUserId);
+    final unreadCount = userNotifications.where((n) => !n.isRead).length;
 
     final newState = state.copyWith(
       notifications: updatedNotifications,
@@ -125,36 +126,57 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     emit(newState);
   }
 
-  bool _isDuplicateNotification(NotificationModel existing, NotificationModel newNotification) {
-    if (existing.type != newNotification.type) return false;
+  Future<void> _showLocalNotification(NotificationModel notification) async {
+    try {
+      final notificationService = NotificationService();
 
-    final existingUserId = existing.data['userId'];
-    final newUserId = newNotification.data['userId'];
-    if (existingUserId != null && newUserId != null && existingUserId != newUserId) {
-      return false;
+      // Use the centralized notification service
+      await notificationService.showLocalNotification(notification);
+    } catch (e) {
+      debugPrint('Error showing local notification from bloc: $e');
+    }
+  }
+
+  bool _isStrictDuplicate(NotificationModel existing, NotificationModel newNotification) {
+    if (existing.userId != newNotification.userId) return false;
+    if (existing.id == newNotification.id) return true;
+    // Same content within 1 minute - duplicates
+    final timeDifference = existing.timestamp.difference(newNotification.timestamp).abs();
+    if (existing.title == newNotification.title &&
+        existing.body == newNotification.body &&
+        existing.type == newNotification.type &&
+        timeDifference.inMinutes < 1) {
+      return true;
     }
 
     switch (existing.type) {
       case 'service_booking':
         final existingBookingId = existing.data['bookingId'];
         final newBookingId = newNotification.data['bookingId'];
-        return existingBookingId != null && existingBookingId == newBookingId;
+        return existingBookingId != null &&
+            newBookingId != null &&
+            existingBookingId == newBookingId &&
+            timeDifference.inMinutes < 5;
 
       case 'towing_request':
         final existingRequestId = existing.data['requestId'];
         final newRequestId = newNotification.data['requestId'];
-        return existingRequestId != null && existingRequestId == newRequestId;
+        return existingRequestId != null &&
+            newRequestId != null &&
+            existingRequestId == newRequestId &&
+            timeDifference.inMinutes < 5;
 
       case 'service_reminder':
         final existingVehicle = existing.data['vehicleInfo'];
         final newVehicle = newNotification.data['vehicleInfo'];
         final existingReminderType = existing.data['reminderType'];
         final newReminderType = newNotification.data['reminderType'];
-        return existingVehicle == newVehicle && existingReminderType == newReminderType;
+        return existingVehicle == newVehicle &&
+            existingReminderType == newReminderType &&
+            timeDifference.inHours < 12;
 
       default:
-        return existing.title == newNotification.title &&
-            existing.body == newNotification.body;
+        return false;
     }
   }
 
