@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
 import 'package:automate_application/services/auth_service.dart';
 
 class AppColors {
@@ -21,16 +20,16 @@ class AppColors {
   static const Color borderColor = Color(0xFFE2E8F0);
 }
 
-class CarOwnerProfilePage extends StatefulWidget {
+class DriverProfilePage extends StatefulWidget {
   final String userId;
 
-  const CarOwnerProfilePage({super.key, required this.userId});
+  const DriverProfilePage({super.key, required this.userId});
 
   @override
-  State<CarOwnerProfilePage> createState() => _CarOwnerProfilePageState();
+  State<DriverProfilePage> createState() => _DriverProfilePageState();
 }
 
-class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
+class _DriverProfilePageState extends State<DriverProfilePage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final AuthService _authService = AuthService();
 
@@ -41,14 +40,12 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
   String? _joinDate;
   String? _verificationStatus;
 
-  // Vehicles data
-  List<Map<String, dynamic>> _vehicles = [];
-
   bool _loading = true;
   bool _editingPhone = false;
   bool _resettingPassword = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _currentPasswordController = TextEditingController();
   final TextEditingController _newPasswordController = TextEditingController();
@@ -62,8 +59,7 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
 
   Future<void> _loadUserData() async {
     try {
-      final userDoc =
-          await _firestore.collection('car_owners').doc(widget.userId).get();
+      final userDoc = await _firestore.collection('drivers').doc(widget.userId).get();
 
       if (userDoc.exists) {
         final userData = userDoc.data() as Map<String, dynamic>;
@@ -71,43 +67,22 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
         setState(() {
           _userName = userData['name'] ?? 'No Name';
           _userEmail = userData['email'] ?? 'No Email';
-          _userPhone = userData['phone'] ?? 'No Phone';
-          _verificationStatus =
-              userData['verification']?['status'] ?? 'pending';
+          _userPhone = userData['phoneNo'] ?? 'No Phone';
+          _verificationStatus = userData['status'] ?? 'pending';
 
           // Format join date from timestamp if available
-          final createdTimestamp = userData['created_at'];
+          final createdTimestamp = userData['createdAt'];
           if (createdTimestamp is Timestamp) {
             _joinDate = _formatDate(createdTimestamp.toDate());
           } else {
             _joinDate = 'Unknown';
           }
 
-          // Load vehicles
-          final vehiclesData = userData['vehicles'] as List<dynamic>?;
-          if (vehiclesData != null) {
-            _vehicles =
-                vehiclesData.map((vehicle) {
-                  final vehicleMap = vehicle as Map<String, dynamic>;
-                  return {
-                    'make': vehicleMap['make'] ?? '',
-                    'model': vehicleMap['model'] ?? '',
-                    'year': vehicleMap['year']?.toString() ?? '',
-                    'plateNumber': vehicleMap['plateNumber'] ?? '',
-                    'status': vehicleMap['status'] ?? 'pending',
-                    'isDefault': vehicleMap['isDefault'] ?? false,
-                    'fuelType': vehicleMap['fuelType'] ?? '',
-                    'displacement': vehicleMap['displacement'] ?? '',
-                    'sizeClass': vehicleMap['sizeClass'] ?? '',
-                  };
-                }).toList();
-          }
-
           _loading = false;
         });
       }
     } catch (e) {
-      print('Error loading user data: $e');
+      print('Error loading driver data: $e');
       setState(() {
         _loading = false;
       });
@@ -116,12 +91,12 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
 
   Future<void> _updatePhoneNumber() async {
     if (_phoneController.text.isEmpty) {
-      _showSnackBar('Please enter a phone number');
+      _showErrorSnackBar('Please enter a phone number');
       return;
     }
 
     try {
-      await _firestore.collection('car_owners').doc(widget.userId).update({
+      await _firestore.collection('drivers').doc(widget.userId).update({
         'phone': _phoneController.text,
         'updated_at': FieldValue.serverTimestamp(),
       });
@@ -134,8 +109,65 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
       _showSnackBar('Phone number updated successfully');
     } catch (e) {
       print('Error updating phone: $e');
-      _showSnackBar('Failed to update phone number');
+      _showErrorSnackBar('Failed to update phone number');
     }
+  }
+
+  Future<void> _resetPassword() async {
+    if (_newPasswordController.text.isEmpty ||
+        _confirmPasswordController.text.isEmpty) {
+      _showErrorSnackBar('Please fill in all password fields');
+      return;
+    }
+
+    if (_newPasswordController.text != _confirmPasswordController.text) {
+      _showErrorSnackBar('New passwords do not match');
+      return;
+    }
+
+    if (_newPasswordController.text.length < 8) {
+      _showErrorSnackBar('Password must be at least 8 characters');
+      return;
+    }
+    if (!RegExp(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)').hasMatch(_newPasswordController.text)) {
+      _showErrorSnackBar('Password must contain uppercase, lowercase, and number');
+      return;
+    }
+
+    setState(() {
+      _resettingPassword = true;
+    });
+
+    try {
+      // Use AuthService to reset password
+      final success = await _authService.resetDriverPassword(
+        email: _userEmail!,
+        newPassword: _newPasswordController.text,
+      );
+
+      if (success) {
+        _showSnackBar('Password reset successfully');
+        _cancelPasswordReset();
+      } else {
+        _showErrorSnackBar('Failed to reset password. Please try again.');
+      }
+    } catch (e) {
+      print('Error resetting password: $e');
+      _showErrorSnackBar('Error resetting password: $e');
+    } finally {
+      setState(() {
+        _resettingPassword = false;
+      });
+    }
+  }
+
+  void _cancelPasswordReset() {
+    _currentPasswordController.clear();
+    _newPasswordController.clear();
+    _confirmPasswordController.clear();
+    setState(() {
+      _resettingPassword = false;
+    });
   }
 
   String _formatDate(DateTime date) {
@@ -144,7 +176,23 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
 
   void _showSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.successColor,
+      ),
+    );
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.errorColor,
+      ),
     );
   }
 
@@ -155,7 +203,7 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
     switch (_verificationStatus) {
       case 'approved':
         color = Colors.green;
-        text = 'Verified';
+        text = 'Verified Driver';
       case 'pending':
         color = Colors.orange;
         text = 'Pending Verification';
@@ -210,7 +258,7 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
                     backgroundColor: AppColors.primaryColor,
                     radius: 30,
                     child: Text(
-                      _userName?.substring(0, 1).toUpperCase() ?? 'U',
+                      _userName?.substring(0, 1).toUpperCase() ?? 'D',
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 20,
@@ -267,7 +315,7 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
               const Divider(height: 24, color: Colors.black),
 
               _buildInfoRow(
-                label: 'Joined Since',
+                label: 'Join Since',
                 value: _joinDate ?? 'Unknown',
                 showEdit: false,
               ),
@@ -361,236 +409,6 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
           ],
         ),
       ],
-    );
-  }
-
-  Widget _buildVehiclesSection() {
-    if (_vehicles.isEmpty) {
-      return Card(
-        elevation: 2,
-        margin: const EdgeInsets.all(16),
-        child: const Padding(
-          padding: EdgeInsets.all(20),
-          child: Center(
-            child: Text(
-              'No vehicles registered',
-              style: TextStyle(color: AppColors.textSecondary),
-            ),
-          ),
-        ),
-      );
-    }
-
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.all(16),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Colors.white, AppColors.primaryColor.withOpacity(0.03)],
-          ),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'My Vehicles',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 16),
-              ..._vehicles.map((vehicle) => _buildVehicleCard(vehicle)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVehicleCard(Map<String, dynamic> vehicle) {
-    final status = vehicle['status'] ?? 'pending';
-    final isDefault = vehicle['isDefault'] ?? false;
-
-    Color statusColor;
-    String statusText;
-
-    switch (status) {
-      case 'approved':
-        statusColor = Colors.green;
-        statusText = 'APPROVED';
-      case 'pending':
-        statusColor = Colors.orange;
-        statusText = 'PENDING';
-      default:
-        statusColor = Colors.grey;
-        statusText = status.toUpperCase();
-    }
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: AppColors.borderColor),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '${vehicle['make']} ${vehicle['model']} (${vehicle['year']})',
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              if (isDefault)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryColor.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Text(
-                    'Default',
-                    style: TextStyle(
-                      color: AppColors.primaryColor,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-
-          const SizedBox(height: 8),
-
-          Text(
-            'Plate: ${vehicle['plateNumber']}',
-            style: const TextStyle(color: AppColors.textSecondary),
-          ),
-
-          if (vehicle['fuelType'] != null && vehicle['fuelType'].isNotEmpty)
-            Text(
-              'Fuel: ${vehicle['fuelType']}',
-              style: const TextStyle(color: AppColors.textSecondary),
-            ),
-
-          if (vehicle['displacement'] != null &&
-              vehicle['displacement'].isNotEmpty)
-            Text(
-              'Displacement: ${vehicle['displacement']}L',
-              style: const TextStyle(color: AppColors.textSecondary),
-            ),
-
-          const SizedBox(height: 8),
-
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: statusColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: statusColor),
-                ),
-                child: Text(
-                  statusText,
-                  style: TextStyle(
-                    color: statusColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _resetPassword() async {
-    if (_newPasswordController.text.isEmpty ||
-        _confirmPasswordController.text.isEmpty) {
-      _showErrorSnackBar('Please fill in all password fields');
-      return;
-    }
-
-    if (_newPasswordController.text != _confirmPasswordController.text) {
-      _showErrorSnackBar('New passwords do not match');
-      return;
-    }
-
-    if (_newPasswordController.text.length < 8) {
-      _showErrorSnackBar('Password must be at least 8 characters');
-      return;
-    }
-    if (!RegExp(r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)').hasMatch(_newPasswordController.text)) {
-      _showErrorSnackBar('Password must contain uppercase, lowercase, and number');
-      return;
-    }
-
-    setState(() {
-      _resettingPassword = true;
-    });
-
-    try {
-      final success = await _authService.resetPassword(
-        email: _userEmail!,
-        newPassword: _newPasswordController.text,
-      );
-
-      if (success) {
-        _showSnackBar('Password reset successfully');
-        _cancelPasswordReset();
-      } else {
-        _showErrorSnackBar('Failed to reset password. Please try again.');
-      }
-    } catch (e) {
-      print('Error resetting password: $e');
-      _showErrorSnackBar('Error resetting password: $e');
-    } finally {
-      setState(() {
-        _resettingPassword = false;
-      });
-    }
-  }
-
-  void _cancelPasswordReset() {
-    _currentPasswordController.clear();
-    _newPasswordController.clear();
-    _confirmPasswordController.clear();
-    setState(() {
-      _resettingPassword = false;
-    });
-  }
-
-  void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 3),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: AppColors.errorColor,
-      ),
     );
   }
 
@@ -695,8 +513,8 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
           obscureText: _obscurePassword,
           decoration: InputDecoration(
             labelText: 'New Password',
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.lock_outline),
+            border: const OutlineInputBorder(),
+            prefixIcon: const Icon(Icons.lock_outline),
             suffixIcon: IconButton(
               icon: Icon(
                 _obscurePassword
@@ -714,10 +532,10 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
         TextField(
           controller: _confirmPasswordController,
           obscureText: _obscureConfirmPassword,
-          decoration:  InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Confirm New Password',
             border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.lock_reset),
+            prefixIcon: const Icon(Icons.lock_outline),
             suffixIcon: IconButton(
               icon: Icon(
                 _obscureConfirmPassword
@@ -776,19 +594,17 @@ class _CarOwnerProfilePageState extends State<CarOwnerProfilePage> {
         foregroundColor: Colors.white,
         elevation: 0,
       ),
-      body:
-          _loading
-              ? const Center(child: CircularProgressIndicator())
-              : RefreshIndicator(
-                onRefresh: _loadUserData,
-                child: ListView(
-                  children: [
-                    _buildUserInfoSection(),
-                    _buildPasswordResetSection(),
-                    _buildVehiclesSection()
-                  ],
-                ),
-              ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+        onRefresh: _loadUserData,
+        child: ListView(
+          children: [
+            _buildUserInfoSection(),
+            _buildPasswordResetSection(),
+          ],
+        ),
+      ),
     );
   }
 

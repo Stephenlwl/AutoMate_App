@@ -10,6 +10,7 @@ import '../../services/navigation_map_service.dart';
 import 'driver_navigation_map_page.dart';
 import 'driver_towing_request_info.dart';
 import '../../services/location_service.dart';
+import '../../pages/towing_driver/driver_profile_page.dart';
 
 class AppColors {
   static const Color primaryColor = Color(0xFFFF6B00);
@@ -42,6 +43,7 @@ class DriverHomePage extends StatefulWidget {
 class _DriverHomePageState extends State<DriverHomePage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  StreamSubscription<QuerySnapshot>? _requestsSubscription;
 
   List<Map<String, dynamic>> _assignedRequests = [];
   bool _isLoading = true;
@@ -56,19 +58,21 @@ class _DriverHomePageState extends State<DriverHomePage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initializeAuth();
       _startPeriodicLocationUpdates();
+      _startRealTimeUpdates();
     });
   }
 
   @override
   void dispose() {
     _locationUpdateTimer?.cancel();
+    _requestsSubscription?.cancel();
     LocationService.stopLocationUpdates();
     super.dispose();
   }
 
   void _startPeriodicLocationUpdates() {
-    // Update location every 2 minutes for dispatched requests
-    _locationUpdateTimer = Timer.periodic(Duration(minutes: 2), (timer) {
+    // Update location every 5 secs for dispatched requests
+    _locationUpdateTimer = Timer.periodic(Duration(seconds: 5), (timer) {
       final dispatchedRequests = _assignedRequests
           .where((request) => request['status'] == 'dispatched')
           .toList();
@@ -93,6 +97,38 @@ class _DriverHomePageState extends State<DriverHomePage> {
       debugPrint('Error initializing driver home: $e');
       setState(() => _isLoading = false);
     }
+  }
+
+  void _startRealTimeUpdates() {
+    if (_currentDriverUid == null) return;
+
+    _requestsSubscription = _firestore
+        .collection('towing_requests')
+        .where('driverId', isEqualTo: _currentDriverUid)
+        .where('status', whereIn: ['dispatched', 'ongoing'])
+        .snapshots()
+        .listen((snapshot) {
+      if (!mounted) return;
+
+      for (final docChange in snapshot.docChanges) {
+        if (docChange.type == DocumentChangeType.modified) {
+          final updatedData = docChange.doc.data() as Map<String, dynamic>;
+          final requestId = docChange.doc.id;
+
+          // Find and update the local request
+          final requestIndex = _assignedRequests.indexWhere((req) => req['id'] == requestId);
+          if (requestIndex != -1) {
+            setState(() {
+              _assignedRequests[requestIndex] = {
+                ..._assignedRequests[requestIndex],
+                ...updatedData,
+                'id': requestId,
+              };
+            });
+          }
+        }
+      }
+    });
   }
 
   void _startLocationTrackingForDispatchedRequests() {
@@ -376,10 +412,10 @@ class _DriverHomePageState extends State<DriverHomePage> {
       );
 
       // Find the request to get customer location
-      final request = _assignedRequests.firstWhere(
-            (req) => req['id'] == requestId,
-        orElse: () => {},
-      );
+      final requestIndex = _assignedRequests.indexWhere((req) => req['id'] == requestId);
+      if (requestIndex == -1) return;
+
+      final request = _assignedRequests[requestIndex];
 
       // Calculate distance and estimated time if customer location is available
       double? distance;
@@ -428,13 +464,17 @@ class _DriverHomePageState extends State<DriverHomePage> {
 
       await _firestore.collection('towing_requests').doc(requestId).update(updateData);
 
-      if (mounted) {
-        CustomSnackBar.show(
-          context: context,
-          message: 'Successfully sharing your location with the customer',
-          type: SnackBarType.success,
-        );
+      if (mounted && distance != null && estimatedTime != null) {
+        setState(() {
+          _assignedRequests[requestIndex] = {
+            ..._assignedRequests[requestIndex],
+            'liveDistance': distance,
+            'estimatedDuration': estimatedTime,
+            'lastLocationUpdate': Timestamp.now(),
+          };
+        });
       }
+
     } catch (e) {
       debugPrint('Error sharing location: $e');
       if (mounted) {
@@ -524,13 +564,24 @@ class _DriverHomePageState extends State<DriverHomePage> {
   Future<void> _refreshRequests() async {
     setState(() => _isRefreshing = true);
     await _loadAssignedRequests();
-    final dispatchedRequests = _assignedRequests
-        .where((request) => request['status'] == 'dispatched')
+    final activeRequests = _assignedRequests
+        .where((request) => request['status'] == 'dispatched' || request['status'] == 'ongoing')
         .toList();
 
-    for (final request in dispatchedRequests) {
+    for (final request in activeRequests) {
       _loadDriverLocation(request['id']);
     }
+  }
+
+  void _navigateToProfile() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DriverProfilePage(
+          userId: _currentDriverUid ?? widget.userId ?? '',
+        ),
+      ),
+    );
   }
 
   void _handleLogout() async {
@@ -957,17 +1008,6 @@ class _DriverHomePageState extends State<DriverHomePage> {
                       children: [
                         if (isDispatched || isOngoing)
                           IconButton(
-                            onPressed: () => _loadDriverLocation(request['id']),
-                            icon: Icon(
-                              Icons.location_on,
-                              color: AppColors.accentColor,
-                              size: 20,
-                            ),
-                            tooltip: 'Share My Location',
-                          ),
-
-                        if (isDispatched || isOngoing)
-                          IconButton(
                             onPressed: () => _showNavigationMap(request),
                             icon: Icon(
                               Icons.navigation,
@@ -1042,6 +1082,11 @@ class _DriverHomePageState extends State<DriverHomePage> {
         backgroundColor: AppColors.primaryColor,
         elevation: 0,
         actions: [
+          IconButton(
+            onPressed: _navigateToProfile,
+            icon: const Icon(Icons.person, color: Colors.white),
+            tooltip: 'Profile',
+          ),
           IconButton(
             onPressed: _handleLogout,
             icon: const Icon(Icons.logout, color: Colors.white),

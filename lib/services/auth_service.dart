@@ -24,38 +24,6 @@ class AuthService {
     );
   }
 
-  /// Generate random salt (16 bytes)
-  Uint8List _generateSalt([int length = 16]) {
-    final rand = Random.secure();
-    return Uint8List.fromList(
-      List<int>.generate(length, (_) => rand.nextInt(256)),
-    );
-  }
-
-  /// Hash password using PBKDF2-like method
-  String _hashPassword(String password, Uint8List salt) {
-    final passwordBytes = utf8.encode(password);
-    final hmac = Hmac(sha256, salt);
-
-    var digest = hmac.convert(passwordBytes);
-    for (int i = 1; i < 10000; i++) {
-      digest = hmac.convert(digest.bytes);
-    }
-
-    return base64Encode(digest.bytes);
-  }
-
-  /// Verify password using stored salt + stored hash
-  bool _verifyPassword(
-      String password,
-      String storedHash,
-      String storedSaltBase64,
-      ) {
-    final salt = base64Decode(storedSaltBase64);
-    final recomputedHash = _hashPassword(password, salt);
-    return recomputedHash == storedHash;
-  }
-
   /// Encrypt images (convert to base64 first, then encrypt)
   Future<Map<String, String>> encryptImage(File file) async {
     try {
@@ -90,6 +58,22 @@ class AuthService {
           .collection('car_owners')
           .where('email', isEqualTo: email)
           .where('verification.status', isEqualTo: 'approved')
+          .limit(1)
+          .get();
+
+      return query.docs.isNotEmpty;
+    } catch (e) {
+      print("Error checking email: $e");
+      return false;
+    }
+  }
+
+  Future<bool> checkDriverEmailExists(String email) async {
+    try {
+      final query = await _firestore
+          .collection('drivers')
+          .where('email', isEqualTo: email)
+          .where('status', isEqualTo: 'approved')
           .limit(1)
           .get();
 
@@ -138,8 +122,7 @@ class AuthService {
           return 'pending';
         } else if (status == 'rejected') {
           // Handle resubmission for rejected user
-          final salt = _generateSalt();
-          final hashedPassword = _hashPassword(password, salt);
+          final hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt());
 
           final icData = await encryptImage(icImage);
           final selfieData = await encryptImage(selfieImage);
@@ -148,7 +131,6 @@ class AuthService {
           await doc.reference.update({
             'name': name,
             'password': hashedPassword,
-            'salt': base64Encode(salt),
             'role': role,
             'phone': phone,
             'documents': {
@@ -193,9 +175,7 @@ class AuthService {
         throw Exception("All document images are required");
       }
 
-      // Generate unique salt per user
-      final salt = _generateSalt();
-      final hashedPassword = _hashPassword(password, salt);
+      final hashedPassword = BCrypt.hashpw(password, BCrypt.gensalt());
 
       // Encrypt images
       final icData = await encryptImage(icImage);
@@ -210,7 +190,6 @@ class AuthService {
         'name': name,
         'email': email,
         'password': hashedPassword,
-        'salt': base64Encode(salt),
         'role': role,
         'phone': phone,
         'documents': {
@@ -275,22 +254,16 @@ class AuthService {
       final doc = query.docs.first;
       final data = doc.data();
 
-      // Verify password with PBKDF2 + salt
       String storedPassword = data['password'] ?? '';
-      String storedSalt = data['salt'] ?? '';
 
-      if (storedPassword.isEmpty || storedSalt.isEmpty) {
+      if (storedPassword.isEmpty) {
         return AuthResult(
           success: false,
           errorMessage: "Account data is corrupted. Please contact support.",
         );
       }
 
-      bool isPasswordValid = _verifyPassword(
-        password,
-        storedPassword,
-        storedSalt,
-      );
+      bool isPasswordValid = BCrypt.checkpw(password, storedPassword);
 
       if (!isPasswordValid) {
         return AuthResult(
@@ -307,7 +280,6 @@ class AuthService {
 
         Map<String, dynamic> userData = Map.from(data);
         userData.remove('password');
-        userData.remove('salt');
 
         return AuthResult(
           success: true,
@@ -390,7 +362,6 @@ class AuthService {
         currentUserId = doc.id;
         try {
           debugPrint('Driver authenticated: ${doc.id}');
-
         } catch (e) {
           debugPrint('Firebase Auth sign-in error: $e');
         }
@@ -420,7 +391,6 @@ class AuthService {
     }
   }
 
-  /// Reset Password generate new salt
   Future<bool> resetPassword({
     required String email,
     required String newPassword,
@@ -438,19 +408,47 @@ class AuthService {
 
       final doc = query.docs.first;
 
-      // Generate new salt + hash
-      final newSalt = _generateSalt();
-      final newHashedPassword = _hashPassword(newPassword, newSalt);
+      final newHashedPassword = BCrypt.hashpw(newPassword, BCrypt.gensalt());
 
       await doc.reference.update({
         'password': newHashedPassword,
-        'salt': base64Encode(newSalt),
         'updated_at': FieldValue.serverTimestamp(),
       });
 
       return true;
     } catch (e) {
       print("Reset password error: $e");
+      return false;
+    }
+  }
+
+  Future<bool> resetDriverPassword({
+    required String email,
+    required String newPassword,
+  }) async {
+    try {
+      final query = await _firestore
+          .collection('drivers')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (query.docs.isEmpty) {
+        return false;
+      }
+
+      final doc = query.docs.first;
+
+      final newHashedPassword = BCrypt.hashpw(newPassword, BCrypt.gensalt());
+
+      await doc.reference.update({
+        'password': newHashedPassword,
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+
+      return true;
+    } catch (e) {
+      print("Reset driver password error: $e");
       return false;
     }
   }

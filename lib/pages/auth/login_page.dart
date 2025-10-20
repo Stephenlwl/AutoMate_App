@@ -318,7 +318,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
   }
 
   Future<void> _handleForgotPassword() async {
-    Navigator.pushNamed(context, '/forgot-password');
+    if (!_isDriverLogin) {
+      Navigator.pushNamed(context, '/forgot-password');
+    }
+    else if(_isDriverLogin) {
+      Navigator.pushNamed(context, '/driver-forgot-password');
+    }
   }
 
   Future<void> _connectUser(

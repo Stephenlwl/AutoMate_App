@@ -1,3 +1,4 @@
+import 'package:automate_application/pages/auth/driver_forgot_password_page.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -196,6 +197,7 @@ class _MyAppState extends State<MyApp> {
             '/register/personal': (context) => const PersonalDetailsPage(),
             '/register/pending': (context) => const RegistrationPendingPage(),
             '/forgot-password': (context) => const ForgotPasswordPage(),
+            '/driver-forgot-password': (context) => const DriverForgotPasswordPage(),
             '/login': (context) => const LoginPage(),
             '/notifications': (context) {
               final args = ModalRoute.of(context)!.settings.arguments as Map<String, dynamic>?;
