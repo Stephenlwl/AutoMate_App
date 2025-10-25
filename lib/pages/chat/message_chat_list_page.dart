@@ -40,6 +40,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
   final ChatService _chatService = ChatService();
   bool _isLoadingServiceCenters = true;
   bool _isAdminSupportOnline = false;
+  List<stream_chat.Channel> _allChannels = [];
+  List<stream_chat.Channel> _filteredServiceCenterChannels = [];
 
   @override
   void initState() {
@@ -68,13 +70,60 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         ),
       ],
     );
+    _channelListController.addListener(_updateFilteredChannels);
     _channelListController.doInitialLoad();
   }
 
+  void _updateFilteredChannels() {
+    final channels = _getCurrentChannels();
+    _allChannels = channels;
+
+    _filteredServiceCenterChannels =
+        _allChannels.where((channel) {
+          final customType = channel.extraData['custom_type'] as String?;
+          if (customType != 'service-center') return false;
+
+          // Apply search filter if query exists
+          if (_searchQuery.isNotEmpty) {
+            final serviceCenter = _getServiceCenterFromChannel(channel);
+            final channelName =
+                serviceCenter?.name?.toLowerCase() ??
+                channel.name?.toLowerCase() ??
+                _getChannelName(channel).toLowerCase();
+            final lastMessage = _getLastMessagePreview(channel);
+
+            return channelName.contains(_searchQuery) ||
+                lastMessage.toLowerCase().contains(_searchQuery);
+          }
+
+          return true;
+        }).toList();
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  List<stream_chat.Channel> _getCurrentChannels() {
+    return [];
+  }
+
   void _onSearchChanged() {
-    setState(() {
-      _searchQuery = _searchController.text.toLowerCase();
-    });
+    final newQuery = _searchController.text.toLowerCase().trim();
+    if (newQuery != _searchQuery) {
+      setState(() {
+        _searchQuery = newQuery;
+      });
+    }
+  }
+
+  String _getLastMessagePreview(stream_chat.Channel channel) {
+    final messages = channel.state?.messages ?? [];
+    if (messages.isNotEmpty) {
+      final lastMessage = messages.last;
+      return lastMessage.text ?? 'Start a conversation';
+    }
+    return 'No messages yet';
   }
 
   Future<void> _loadServiceCenters() async {
@@ -184,15 +233,14 @@ class _MessageChatListPageState extends State<MessageChatListPage>
     final client = stream_chat.StreamChat.of(context).client;
 
     // Initial query
-    client.queryUsers(
-      filter: stream_chat.Filter.equal('id', 'admin-support'),
-    ).then((usersResult) {
-      if (usersResult.users.isNotEmpty && mounted) {
-        setState(() {
-          _isAdminSupportOnline = usersResult.users.first.online ?? false;
+    client.queryUsers(filter: stream_chat.Filter.equal('id', 'admin-support'))
+        .then((usersResult) {
+          if (usersResult.users.isNotEmpty && mounted) {
+            setState(() {
+              _isAdminSupportOnline = usersResult.users.first.online ?? false;
+            });
+          }
         });
-      }
-    });
 
     // Listen for updates
     client.on(stream_chat.EventType.userUpdated).listen((event) {
@@ -204,15 +252,18 @@ class _MessageChatListPageState extends State<MessageChatListPage>
     });
   }
 
-  void _enhanceOnlineStatusMonitoring(stream_chat.StreamChatClient client, Map<String, bool> onlineStatus) {
-    client.queryUsers(
-      filter: stream_chat.Filter.in_('role', ['service_center']),
-    ).then((users) {
-      for (final user in users.users) {
-        onlineStatus[user.id] = user.online;
-      }
-      if (mounted) setState(() {});
-    });
+  void _enhanceOnlineStatusMonitoring(
+    stream_chat.StreamChatClient client,
+    Map<String, bool> onlineStatus,
+  ) {
+    client
+        .queryUsers(filter: stream_chat.Filter.in_('role', ['service_center']))
+        .then((users) {
+          for (final user in users.users) {
+            onlineStatus[user.id] = user.online;
+          }
+          if (mounted) setState(() {});
+        });
 
     client.on(stream_chat.EventType.userUpdated).listen((event) {
       if (event.user?.role == 'service_center') {
@@ -224,7 +275,8 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
   ServiceCenter? _getServiceCenterFromChannel(stream_chat.Channel channel) {
     try {
-      final centerInfo = channel.extraData['center_info'] as Map<String, dynamic>?;
+      final centerInfo =
+          channel.extraData['center_info'] as Map<String, dynamic>?;
       if (centerInfo != null) {
         final centerId = centerInfo['id'] as String?;
         if (centerId != null && _serviceCenters.containsKey(centerId)) {
@@ -285,6 +337,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
   @override
   void dispose() {
+    _channelListController.removeListener(_updateFilteredChannels);
     _channelListController.dispose();
     _tabController.dispose();
     _searchController.dispose();
@@ -341,7 +394,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
       title: AnimatedSwitcher(
         duration: const Duration(milliseconds: 300),
         child: Text(
-          _isSearching ? 'Search Messages' : 'Messages',
+          _isSearching ? 'Search Chat' : 'Messages',
           key: ValueKey(_isSearching),
           style: const TextStyle(
             color: AppColors.secondaryColor,
@@ -395,7 +448,7 @@ class _MessageChatListPageState extends State<MessageChatListPage>
           controller: _searchController,
           autofocus: true,
           decoration: const InputDecoration(
-            hintText: 'Search messages...',
+            hintText: 'Search by service center name...',
             prefixIcon: Icon(Icons.search, color: Colors.grey),
             border: InputBorder.none,
             contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -435,7 +488,10 @@ class _MessageChatListPageState extends State<MessageChatListPage>
 
         // Filter for admin-support channels
         if (customType == 'admin-support') {
-          return _CustomerSupportTile(channel: channel, isAdminOnline: _isAdminSupportOnline);
+          return _CustomerSupportTile(
+            channel: channel,
+            isAdminOnline: _isAdminSupportOnline,
+          );
         }
         return const SizedBox.shrink();
       },
@@ -457,23 +513,68 @@ class _MessageChatListPageState extends State<MessageChatListPage>
         final customType = channel.extraData['custom_type'] as String?;
 
         // Filter for service-center channels
-        if (customType == 'service-center') {
-          final serviceCenter = _getServiceCenterFromChannel(channel);
-          final isOnline = serviceCenter != null
-              ? _isServiceCenterOnline(serviceCenter.id)
-              : false;
+        if (customType != 'service-center') return const SizedBox.shrink();
 
-          return ServiceCenterChatTile(
-            channel: channel,
-            serviceCenter: serviceCenter,
-            isOnline: isOnline,
-          );
+        // Apply search filter
+        if (_searchQuery.isNotEmpty) {
+          final serviceCenter = _getServiceCenterFromChannel(channel);
+          final channelName =
+              serviceCenter?.name?.toLowerCase() ??
+              channel.name?.toLowerCase() ??
+              _getChannelName(channel).toLowerCase();
+
+          if (!channelName.contains(_searchQuery)) {
+            return const SizedBox.shrink();
+          }
         }
-        return const SizedBox.shrink();
+
+        final serviceCenter = _getServiceCenterFromChannel(channel);
+        final isOnline =
+            serviceCenter != null
+                ? _isServiceCenterOnline(serviceCenter.id)
+                : false;
+
+        return ServiceCenterChatTile(
+          channel: channel,
+          serviceCenter: serviceCenter,
+          isOnline: isOnline,
+        );
       },
-      emptyBuilder: (context) => _buildEmptyServiceCenters(),
+      emptyBuilder:
+          (context) =>
+              _searchQuery.isEmpty
+                  ? _buildEmptyServiceCenters()
+                  : _buildNoSearchResults(),
       loadingBuilder: (context) => _buildLoadingState(),
       errorBuilder: (context, error) => _buildErrorState(error),
+    );
+  }
+
+  Widget _buildNoSearchResults() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.search_off, size: 64, color: Colors.grey.shade400),
+            const SizedBox(height: 16),
+            Text(
+              'No results found for "$_searchQuery"',
+              style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: AppColors.secondaryColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Try searching with different keywords',
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -691,6 +792,20 @@ class _MessageChatListPageState extends State<MessageChatListPage>
       }
     }
   }
+
+  String _getChannelName(stream_chat.Channel channel) {
+    final channelName = channel.name ?? channel.extraData['name'] as String?;
+    if (channelName != null && channelName.isNotEmpty) {
+      return channelName;
+    }
+
+    final channelId = channel.id;
+    if (channelId != null && channelId.startsWith('service_center_')) {
+      return 'Service Center';
+    }
+
+    return 'Chat';
+  }
 }
 
 class ServiceCenterChatTile extends StatelessWidget {
@@ -731,18 +846,20 @@ class ServiceCenterChatTile extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ServiceCenterChatPage(
-                    serviceCenterId: serviceCenter?.id ?? '',
-                    serviceCenterName: serviceCenter?.name ?? 'Service Center',
-                    channel: channel,
-                    serviceCenterAvatar: serviceCenter?.serviceCenterPhoto,
-                  ),
+                  builder:
+                      (context) => ServiceCenterChatPage(
+                        serviceCenterId: serviceCenter?.id ?? '',
+                        serviceCenterName:
+                            serviceCenter?.name ?? 'Service Center',
+                        channel: channel,
+                        serviceCenterAvatar: serviceCenter?.serviceCenterPhoto,
+                      ),
                 ),
               );
             },
             borderRadius: BorderRadius.circular(16),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(8),
               child: Row(
                 children: [
                   // Service Center Avatar
@@ -773,9 +890,15 @@ class ServiceCenterChatTile extends StatelessWidget {
                                 ),
                                 const SizedBox(width: 8),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: isOnline ? AppColors.successColor : Colors.grey,
+                                    color:
+                                        isOnline
+                                            ? AppColors.successColor
+                                            : Colors.grey,
                                     borderRadius: BorderRadius.circular(8),
                                   ),
                                   child: Text(
@@ -789,7 +912,7 @@ class ServiceCenterChatTile extends StatelessWidget {
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 8),
                             Text(
                               lastMessage?.text ?? 'Start a conversation',
                               maxLines: 2,
@@ -799,9 +922,20 @@ class ServiceCenterChatTile extends StatelessWidget {
                                 color: Colors.grey.shade600,
                               ),
                             ),
+                            if (lastMessage != null) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                _formatTime(lastMessage.createdAt),
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade500,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
-                        if (serviceCenter?.rating != null && serviceCenter!.rating! > 0) ...[
+                        if (serviceCenter?.rating != null &&
+                            serviceCenter!.rating! > 0) ...[
                           const SizedBox(height: 4),
                           Row(
                             children: [
@@ -837,14 +971,6 @@ class ServiceCenterChatTile extends StatelessWidget {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      if (lastMessage != null)
-                        Text(
-                          _formatTime(lastMessage.createdAt),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
                       const SizedBox(height: 4),
                       StreamBuilder<int>(
                         stream: channel.state?.unreadCountStream,
@@ -853,13 +979,18 @@ class ServiceCenterChatTile extends StatelessWidget {
                           final unreadCount = snapshot.data ?? 0;
                           if (unreadCount > 0) {
                             return Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
                               decoration: const BoxDecoration(
                                 color: AppColors.primaryColor,
                                 shape: BoxShape.circle,
                               ),
                               child: Text(
-                                unreadCount > 99 ? '99+' : unreadCount.toString(),
+                                unreadCount > 99
+                                    ? '99+'
+                                    : unreadCount.toString(),
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 10,
@@ -909,8 +1040,8 @@ class ServiceCenterChatTile extends StatelessWidget {
           final base64Str = photoUrl.split(',').last;
           final bytes = base64.decode(base64Str);
           return Container(
-            width: 48,
-            height: 48,
+            width: 60,
+            height: 60,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(12),
               image: DecorationImage(
@@ -926,8 +1057,8 @@ class ServiceCenterChatTile extends StatelessWidget {
       } else if (photoUrl.startsWith('http')) {
         // Network image
         return Container(
-          width: 48,
-          height: 48,
+          width: 60,
+          height: 60,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             image: DecorationImage(
@@ -941,8 +1072,8 @@ class ServiceCenterChatTile extends StatelessWidget {
     final channelImage = channel.image ?? channel.extraData['image'] as String?;
     if (channelImage != null && channelImage.isNotEmpty) {
       return Container(
-        width: 48,
-        height: 48,
+        width: 60,
+        height: 60,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(12),
           image: DecorationImage(
@@ -958,17 +1089,13 @@ class ServiceCenterChatTile extends StatelessWidget {
 
   Widget _buildDefaultAvatar() {
     return Container(
-      width: 48,
-      height: 48,
+      width: 60,
+      height: 60,
       decoration: BoxDecoration(
         color: AppColors.primaryColor,
         borderRadius: BorderRadius.circular(12),
       ),
-      child: const Icon(
-        Icons.car_repair,
-        color: Colors.white,
-        size: 24,
-      ),
+      child: const Icon(Icons.car_repair, color: Colors.white, size: 24),
     );
   }
 
@@ -995,9 +1122,11 @@ class ServiceCenterChatTile extends StatelessWidget {
   }
 }
 
-
 class _CustomerSupportTile extends StatelessWidget {
-  const _CustomerSupportTile({required this.channel, required this.isAdminOnline});
+  const _CustomerSupportTile({
+    required this.channel,
+    required this.isAdminOnline,
+  });
 
   final stream_chat.Channel channel;
   final bool isAdminOnline;
@@ -1029,9 +1158,8 @@ class _CustomerSupportTile extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => CustomerSupportChatPage(
-                    channel: channel,
-                  ),
+                  builder:
+                      (context) => CustomerSupportChatPage(channel: channel),
                 ),
               );
             },
@@ -1043,7 +1171,10 @@ class _CustomerSupportTile extends StatelessWidget {
                   Container(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
-                        colors: [AppColors.primaryColor, AppColors.primaryColor.withOpacity(0.8)],
+                        colors: [
+                          AppColors.primaryColor,
+                          AppColors.primaryColor.withOpacity(0.8),
+                        ],
                       ),
                       borderRadius: BorderRadius.circular(12),
                       boxShadow: [
@@ -1085,9 +1216,15 @@ class _CustomerSupportTile extends StatelessWidget {
                             ),
                             const SizedBox(width: 8),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 2,
+                              ),
                               decoration: BoxDecoration(
-                                color: isAdminOnline ? AppColors.successColor : Colors.grey,
+                                color:
+                                    isAdminOnline
+                                        ? AppColors.successColor
+                                        : Colors.grey,
                                 borderRadius: BorderRadius.circular(8),
                               ),
                               child: Text(
@@ -1111,20 +1248,22 @@ class _CustomerSupportTile extends StatelessWidget {
                             color: Colors.grey.shade600,
                           ),
                         ),
+                        if (lastMessage != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            _formatTime(lastMessage.createdAt),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade500,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      if (lastMessage != null)
-                        Text(
-                          _formatTime(lastMessage.createdAt),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
                       const SizedBox(height: 4),
                       StreamBuilder<int>(
                         stream: channel.state?.unreadCountStream,

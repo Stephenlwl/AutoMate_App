@@ -216,7 +216,7 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                   return AlertDialog(
                     title: const Text('Enable Biometric Login?'),
                     content: const Text(
-                      'Would you like to enable fingerprint/face authentication for faster and more secure login next time?',
+                      'Would you like to enable fingerprint authentication for faster and more secure login next time?',
                     ),
                     actions: [
                       TextButton(
