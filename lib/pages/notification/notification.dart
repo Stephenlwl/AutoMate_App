@@ -23,10 +23,12 @@ class NotificationsPage extends StatelessWidget {
 
               return TextButton(
                 onPressed: () {
-                  context.read<NotificationBloc>().add(ClearAllNotificationsEvent());
+                  context.read<NotificationBloc>().add(
+                      MarkAllAsReadEvent(),
+                  );
                 },
                 child: const Text(
-                  'Clear All',
+                  'Mark All Read',
                   style: TextStyle(color: Colors.red),
                 ),
               );

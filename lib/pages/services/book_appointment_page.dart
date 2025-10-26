@@ -221,28 +221,59 @@ class _BookAppointmentPageState extends State<BookAppointmentPage> {
       'Saturday',
       'Sunday',
     ];
+    final currentDateString = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+    // Check if today is a special closure FIRST
+    for (final closure in widget.serviceCenter.specialClosures ?? []) {
+      try {
+        if (closure['date'] != null) {
+          final closureDate = closure['date'] as String;
+
+          // Compare date strings directly
+          if (currentDateString == closureDate) {
+            // This is a full-day special closure
+            setState(() {
+              isServiceCenterOpen = false;
+            });
+            return;
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    // If no special closure applies today, check normal operating hours
     final currentDay = dayNames[now.weekday - 1];
+    final currentTime = TimeOfDay.now();
 
     final todayHours = widget.serviceCenter.operatingHours.firstWhere(
-      (hours) => hours['day'] == currentDay,
+          (hours) => hours['day'] == currentDay,
       orElse: () => {},
     );
 
-    if (todayHours.isNotEmpty) {
-      final isClosed = todayHours['isClosed'] == true;
-      if (!isClosed) {
-        final openTime = _parseTimeString(todayHours['open'] ?? '09:00');
-        final closeTime = _parseTimeString(todayHours['close'] ?? '18:00');
-        final currentTime = TimeOfDay.now();
+    if (todayHours.isEmpty || todayHours['isClosed'] == true) {
+      setState(() {
+        isServiceCenterOpen = false;
+      });
+      return;
+    }
 
-        setState(() {
-          isServiceCenterOpen = _isTimeInRange(
-            currentTime,
-            openTime,
-            closeTime,
-          );
-        });
-      }
+    try {
+      final openTime = _parseTimeString(todayHours['open'] ?? '09:00');
+      final closeTime = _parseTimeString(todayHours['close'] ?? '18:00');
+
+      setState(() {
+        isServiceCenterOpen = _isTimeInRange(
+          currentTime,
+          openTime,
+          closeTime,
+        );
+      });
+    } catch (e) {
+      setState(() {
+        isServiceCenterOpen = false;
+      });
     }
   }
 

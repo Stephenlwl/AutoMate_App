@@ -853,12 +853,9 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
   }
 
   Map<String, dynamic> _getOperatingStatus(
-    List<Map<String, dynamic>> operatingHours,
-  ) {
-    if (operatingHours.isEmpty) {
-      return {'status': 'Unknown', 'isOpen': false};
-    }
-
+      List<Map<String, dynamic>> specialClosures,
+      List<Map<String, dynamic>> operatingHours,
+      ) {
     final now = DateTime.now();
     final dayNames = [
       'Monday',
@@ -869,16 +866,41 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
       'Saturday',
       'Sunday',
     ];
+    final currentDateString = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+    // Check if today is a special closure
+    for (final closure in specialClosures) {
+      try {
+        if (closure['date'] != null) {
+          final closureDate = closure['date'] as String;
+
+          // Compare date strings directly
+          if (currentDateString == closureDate) {
+            return {
+              'status': closure['reason'] ?? 'Special Closure',
+              'isOpen': false
+            };
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    // If no special closure applies today, check normal operating hours
     final currentDay = dayNames[now.weekday - 1];
     final currentTime = TimeOfDay.now();
 
     final todayHours = operatingHours.firstWhere(
-      (hours) => hours['day'] == currentDay,
+          (hours) => hours['day'] == currentDay,
       orElse: () => {},
     );
 
     if (todayHours.isEmpty || todayHours['isClosed'] == true) {
-      return {'status': 'Closed', 'isOpen': false};
+      return {
+        'status': todayHours['reason'] ?? 'Closed',
+        'isOpen': false
+      };
     }
 
     try {
@@ -898,9 +920,15 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
       if (currentMinutes >= openMinutes && currentMinutes <= closeMinutes) {
         return {'status': 'Open', 'isOpen': true};
       } else if (currentMinutes < openMinutes) {
-        return {'status': 'Opens at ${todayHours['open']}', 'isOpen': false};
+        return {
+          'status': 'Opens at ${todayHours['open']}',
+          'isOpen': false
+        };
       } else {
-        return {'status': 'Closed', 'isOpen': false};
+        return {
+          'status': 'Closed at ${todayHours['close']}',
+          'isOpen': false
+        };
       }
     } catch (e) {
       return {'status': 'Unknown', 'isOpen': false};
@@ -1457,7 +1485,7 @@ class _SearchServiceCenterPageState extends State<SearchServiceCenterPage> {
   }
 
   Widget _buildServiceCenterCard(ServiceCenter center) {
-    final operatingInfo = _getOperatingStatus(center.operatingHours);
+    final operatingInfo = _getOperatingStatus(center.specialClosures, center.operatingHours);
     final statusColor = _getStatusColor(operatingInfo['isOpen']);
 
     return Container(

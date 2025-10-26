@@ -60,7 +60,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     _loadUserVehicles();
     _loadServiceHistory();
   }
@@ -204,7 +204,6 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         final location = _safeMapConversion(data['location']);
         final pricingBreakdown = _safeMapConversion(data['pricingBreakdown']);
         final payment = _safeMapConversion(data['payment']);
-        final rating = _safeMapConversion(data['rating']);
         final timestamps = _safeMapConversion(data['timestamps']);
 
         // Get location information
@@ -298,16 +297,7 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
           'responseTime': data['responseTime'],
           'estimatedDuration': data['estimatedDuration'],
           'statusHistory': data['statusHistory'] ?? [],
-          'rating':
-              rating.isNotEmpty
-                  ? {
-                    'stars':
-                        rating['serviceRating'] ??
-                        rating['driverRating'] ??
-                        rating['stars'],
-                    'comment': rating['comments'] ?? rating['comment'],
-                  }
-                  : null,
+          'rating': data['rating'],
           'cancellation':
               data['cancellationReason'] != null
                   ? {
@@ -543,21 +533,38 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         return filtered
             .where(
               (item) => [
-                'pending',
+                'pending'
+          ].contains(item['status']),
+        )
+            .toList();
+      case 2:
+        return filtered
+            .where(
+              (item) => [
                 'confirmed',
+                'accepted',
                 'assigned',
-                'in_progress',
-                'dispatched',
               ].contains(item['status']),
             )
             .toList();
-      case 2: // Ready
+      case 3:
+        return filtered
+            .where(
+              (item) => [
+            'in_progress',
+            'dispatched',
+            'ongoing',
+            'generated_invoice'
+          ].contains(item['status']),
+        )
+            .toList();
+      case 4: // Ready
         return filtered
             .where((item) => item['status'] == 'ready_to_collect')
             .toList();
-      case 3: // Completed
+      case 5: // Completed
         return filtered.where((item) => item['status'] == 'completed').toList();
-      case 4: // Cancelled/Declined
+      case 6: // Cancelled/Declined
         return filtered
             .where((item) => ['cancelled', 'declined'].contains(item['status']))
             .toList();
@@ -672,10 +679,12 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         isScrollable: true,
         tabs: [
           Tab(text: 'All (${_getTabHistory(0).length})'),
-          Tab(text: 'Active (${_getTabHistory(1).length})'),
-          Tab(text: 'Ready (${_getTabHistory(2).length})'),
-          Tab(text: 'Completed (${_getTabHistory(3).length})'),
-          Tab(text: 'Cancelled (${_getTabHistory(4).length})'),
+          Tab(text: 'Pending (${_getTabHistory(1).length})'),
+          Tab(text: 'Active (${_getTabHistory(2).length})'),
+          Tab(text: 'Ongoing (${_getTabHistory(3).length})'),
+          Tab(text: 'Ready (${_getTabHistory(4).length})'),
+          Tab(text: 'Completed (${_getTabHistory(5).length})'),
+          Tab(text: 'Cancelled (${_getTabHistory(6).length})'),
         ],
       ),
     );
@@ -916,6 +925,8 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
         _buildHistoryList(_getTabHistory(2)),
         _buildHistoryList(_getTabHistory(3)),
         _buildHistoryList(_getTabHistory(4)),
+        _buildHistoryList(_getTabHistory(5)),
+        _buildHistoryList(_getTabHistory(6)),
       ],
     );
   }
@@ -3580,23 +3591,6 @@ class _ServiceHistoryPageState extends State<ServiceHistoryPage>
                         ),
                         child: Row(
                           children: [
-                            // Review Button for completed towing without rating
-                            if (isCompleted && !hasRating) ...[
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () => _showReviewDialog(towing),
-                                  icon: const Icon(Icons.star, size: 18),
-                                  label: const Text('Rate Service'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.amber,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 12,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
                             // Cancel button for pending requests
                             if (status == 'pending') ...[
                               Expanded(

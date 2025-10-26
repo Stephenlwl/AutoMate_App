@@ -142,7 +142,7 @@ class NotificationListenerService {
   }
 
   void _handleServiceBookingUpdate(String bookingId, Map<String, dynamic> data) {
-    final status = data['status'] ?? 'unknown';
+    final status = data['status'] ?? 'pending';
     final serviceCenterId = data['serviceCenterId'] ?? '';
     final vehicleMake = data['vehicle']['make'] ?? 'Your vehicle';
     final vehicleModel = data['vehicle']['model'] ?? '';
@@ -181,13 +181,15 @@ class NotificationListenerService {
     final vehicleYear = data['vehicle']['year'] ?? '';
     final plateNumber = data['vehicle']['plateNumber'] ?? '';
     final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
+    final serviceType = data['serviceType'] ?? 'service';
+    final status = data['status'] ?? 'pending';
 
     _getServiceCenterName(serviceCenterId).then((serviceCenterName) {
       final notification = NotificationModel(
         id: 'service_${bookingId}_${DateTime.now().millisecondsSinceEpoch}',
         userId: _userId,
-        title: 'Booking Confirmed',
-        body: 'Your booking for $vehicleInfo at $serviceCenterName has been received. We\'ll confirm shortly.',
+        title: _getServiceBookingTitle(status),
+        body: _getServiceBookingBody(status, serviceCenterName, vehicleInfo, serviceType, data),
         type: 'service_booking',
         data: {
           'bookingId': bookingId,
@@ -242,12 +244,13 @@ class NotificationListenerService {
     final plateNumber = data['vehicleInfo']['plateNumber'] ?? '';
     final vehicleInfo = '${vehicleMake ?? ''} ${vehicleModel ?? ''}${vehicleYear != null ? ' ($vehicleYear)' : ''} - ${plateNumber ?? 'No Plate'}'.trim();
     final location = data['location']?['customer']?['address']?['full'] ?? 'your location';
+    final status = data['status'] ?? 'pending';
 
     final notification = NotificationModel(
       id: 'towing_${requestId}_${DateTime.now().millisecondsSinceEpoch}',
       userId: _userId,
-      title: 'Towing Request Received',
-      body: 'Help is on the way! We\'ve received your towing request for $vehicleInfo at $location.',
+      title: _getTowingRequestTitle(status),
+      body: _getTowingRequestBody(status, vehicleInfo, location, data),
       type: 'towing_request',
       data: {
         'requestId': requestId,
@@ -454,7 +457,7 @@ class NotificationListenerService {
       if (mileageDifference <= 500 && mileageDifference > 0) {
         await _showServiceReminderNotification(
           title: 'Service Due Soon - $vehicleInfo',
-          body: 'Your $serviceType is due in $mileageDifference km. Book your service now!',
+          body: 'Your ${_getServiceTypeDisplayName(serviceType)} is due in $mileageDifference km. Book your service now!',
           type: 'service_reminder',
           data: {
             'serviceType': serviceType,
@@ -467,7 +470,7 @@ class NotificationListenerService {
       } else if (mileageDifference <= 0) {
         await _showServiceReminderNotification(
           title: 'Service Overdue - $vehicleInfo',
-          body: 'Your $serviceType is ${mileageDifference.abs()} km overdue. Please schedule service immediately.',
+          body: 'Your ${_getServiceTypeDisplayName(serviceType)} is ${mileageDifference.abs()} km overdue. Please schedule service immediately.',
           type: 'service_reminder',
           data: {
             'serviceType': serviceType,
@@ -489,7 +492,7 @@ class NotificationListenerService {
         if (daysUntilDue <= 7 && daysUntilDue >= 0) {
           await _showServiceReminderNotification(
             title: 'Service Appointment - $vehicleInfo',
-            body: 'Your $serviceType is due in $daysUntilDue days. Get ready for your appointment!',
+            body: 'Your ${_getServiceTypeDisplayName(serviceType)} is due in $daysUntilDue days. Get ready for your appointment!',
             type: 'service_reminder',
             data: {
               'serviceType': serviceType,
@@ -504,7 +507,7 @@ class NotificationListenerService {
         if (daysUntilDue < 0) {
           await _showServiceReminderNotification(
             title: 'Service Overdue - $vehicleInfo',
-            body: 'Your $serviceType is ${daysUntilDue.abs()} days overdue. Please contact your service center.',
+            body: 'Your ${_getServiceTypeDisplayName(serviceType)} is ${daysUntilDue.abs()} days overdue. Please contact your service center.',
             type: 'service_reminder',
             data: {
               'serviceType': serviceType,
@@ -553,5 +556,20 @@ class NotificationListenerService {
       case 'cancelled': return 'Cancelled';
       default: return status;
     }
+  }
+
+  String _getServiceTypeDisplayName(String serviceType) {
+    final displayNames = {
+      'engine_oil': 'Engine Oil Change',
+      'alignment': 'Wheel Alignment',
+      'battery': 'Battery Replacement',
+      'tire_rotation': 'Tire Rotation',
+      'brake_fluid': 'Brake Fluid Change',
+      'air_filter': 'Air Filter Replacement',
+      'coolant': 'Coolant Flush',
+      'gear_oil': 'Gear Oil',
+      'at_fluid': 'AT Fluid',
+    };
+    return displayNames[serviceType] ?? serviceType.replaceAll('_', ' ').toUpperCase();
   }
 }

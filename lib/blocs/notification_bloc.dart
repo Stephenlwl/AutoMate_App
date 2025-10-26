@@ -20,8 +20,6 @@ class MarkAsReadEvent extends NotificationEvent {
 
 class LoadNotificationsEvent extends NotificationEvent {}
 
-class ClearAllNotificationsEvent extends NotificationEvent {}
-
 class MarkAllAsReadEvent extends NotificationEvent {}
 
 class NotificationState {
@@ -66,7 +64,6 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     on<NewNotificationEvent>(_onNewNotification);
     on<MarkAsReadEvent>(_onMarkAsRead);
     on<LoadNotificationsEvent>(_onLoadNotifications);
-    on<ClearAllNotificationsEvent>(_onClearAllNotifications);
     on<MarkAllAsReadEvent>(_onMarkAllAsRead);
 
     _loadPersistedData();
@@ -80,7 +77,6 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
   }
 
   void _onNewNotification(NewNotificationEvent event, Emitter<NotificationState> emit) async {
-    // First check if notification belongs to current user
     if (event.notification.userId != currentUserId) {
       return;
     }
@@ -89,6 +85,7 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     if (state.notifications.isEmpty && state.shownNotificationIds.isEmpty) {
       await _loadPersistedData();
     }
+
     final isDuplicate = state.notifications.any((existing) =>
         _isStrictDuplicate(existing, event.notification)
     );
@@ -99,20 +96,28 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     List<NotificationModel> updatedNotifications;
     List<String> updatedShownIds = List.from(state.shownNotificationIds);
 
-    // Add as new notification at the beginning of the list
     updatedNotifications = [event.notification, ...state.notifications];
 
-    // Mark as shown if it should show popup
-    if (event.shouldShowPopup && !updatedShownIds.contains(event.notification.id)) {
-      updatedShownIds.add(event.notification.id);
-      _showLocalNotification(event.notification);
+    final shouldShowPopup = event.shouldShowPopup &&
+        !updatedShownIds.contains(event.notification.id) &&
+        !_isAlreadyShown(event.notification);
+
+    if (shouldShowPopup) {
+      // only service_reminder type repeated
+      final isServiceReminder = event.notification.type == 'service_reminder';
+      final hasBeenShownBefore = updatedShownIds.contains(event.notification.id);
+
+      if (isServiceReminder || !hasBeenShownBefore) {
+        updatedShownIds.add(event.notification.id);
+        _showLocalNotification(event.notification);
+      }
     }
 
     if (updatedNotifications.length > 50) {
       updatedNotifications = updatedNotifications.sublist(0, 50);
     }
 
-    // Calculate unread count ONLY for current user
+    // Calculate unread count only for current user
     final userNotifications = updatedNotifications.where((n) => n.userId == currentUserId);
     final unreadCount = userNotifications.where((n) => !n.isRead).length;
 
@@ -124,6 +129,35 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
 
     _persistState(newState);
     emit(newState);
+  }
+
+  bool _isAlreadyShown(NotificationModel notification) {
+    // service_booking and towing_request check if similar notification was already shown
+    if (notification.type == 'service_booking' || notification.type == 'towing_request') {
+      return state.shownNotificationIds.any((shownId) {
+        final shownNotification = state.notifications.firstWhere(
+              (n) => n.id == shownId,
+          orElse: () => NotificationModel(
+            id: '',
+            title: '',
+            body: '',
+            type: '',
+            timestamp: DateTime.now(),
+            data: {},
+            userId: '',
+          ),
+        );
+
+        // Check if it's the same type and has the same booking orrequest ID
+        if (shownNotification.type == notification.type) {
+          final existingId = shownNotification.data['bookingId'] ?? shownNotification.data['requestId'];
+          final newId = notification.data['bookingId'] ?? notification.data['requestId'];
+          return existingId == newId && existingId != null;
+        }
+        return false;
+      });
+    }
+    return state.shownNotificationIds.contains(notification.id);
   }
 
   Future<void> _showLocalNotification(NotificationModel notification) async {
@@ -140,44 +174,26 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
   bool _isStrictDuplicate(NotificationModel existing, NotificationModel newNotification) {
     if (existing.userId != newNotification.userId) return false;
     if (existing.id == newNotification.id) return true;
-    // Same content within 1 minute - duplicates
-    final timeDifference = existing.timestamp.difference(newNotification.timestamp).abs();
-    if (existing.title == newNotification.title &&
-        existing.body == newNotification.body &&
-        existing.type == newNotification.type &&
-        timeDifference.inMinutes < 1) {
-      return true;
+
+    if (existing.type == 'service_booking' || existing.type == 'towing_request') {
+      final existingId = existing.data['bookingId'] ?? existing.data['requestId'];
+      final newId = newNotification.data['bookingId'] ?? newNotification.data['requestId'];
+      return existingId != null && newId != null && existingId == newId;
     }
 
-    switch (existing.type) {
-      case 'service_booking':
-        final existingBookingId = existing.data['bookingId'];
-        final newBookingId = newNotification.data['bookingId'];
-        return existingBookingId != null &&
-            newBookingId != null &&
-            existingBookingId == newBookingId &&
-            timeDifference.inMinutes < 5;
+    if (existing.type == 'service_reminder') {
+      final existingVehicle = existing.data['vehicleInfo'];
+      final newVehicle = newNotification.data['vehicleInfo'];
+      final existingReminderType = existing.data['reminderType'];
+      final newReminderType = newNotification.data['reminderType'];
+      final timeDifference = existing.timestamp.difference(newNotification.timestamp).abs();
 
-      case 'towing_request':
-        final existingRequestId = existing.data['requestId'];
-        final newRequestId = newNotification.data['requestId'];
-        return existingRequestId != null &&
-            newRequestId != null &&
-            existingRequestId == newRequestId &&
-            timeDifference.inMinutes < 5;
-
-      case 'service_reminder':
-        final existingVehicle = existing.data['vehicleInfo'];
-        final newVehicle = newNotification.data['vehicleInfo'];
-        final existingReminderType = existing.data['reminderType'];
-        final newReminderType = newNotification.data['reminderType'];
-        return existingVehicle == newVehicle &&
-            existingReminderType == newReminderType &&
-            timeDifference.inHours < 12;
-
-      default:
-        return false;
+      return existingVehicle == newVehicle &&
+          existingReminderType == newReminderType &&
+          timeDifference.inHours < 24;
     }
+
+    return false;
   }
 
   void _onMarkAsRead(MarkAsReadEvent event, Emitter<NotificationState> emit) async {
@@ -228,35 +244,6 @@ class NotificationBloc extends Bloc<NotificationEvent, NotificationState> {
     if (state.notifications.isEmpty && state.shownNotificationIds.isEmpty) {
       await _loadPersistedData();
     }
-  }
-
-  void _onClearAllNotifications(ClearAllNotificationsEvent event, Emitter<NotificationState> emit) async {
-    if (state.notifications.isEmpty && state.shownNotificationIds.isEmpty) {
-      await _loadPersistedData();
-    }
-
-    final userNotifications = state.notifications.where((n) => n.userId == currentUserId).toList();
-    final userShownIds = state.shownNotificationIds.where((id) {
-      final notification = state.notifications.firstWhere((n) => n.id == id, orElse: () => NotificationModel(
-        id: '',
-        title: '',
-        body: '',
-        type: '',
-        timestamp: DateTime.now(),
-        data: {},
-        userId: '',
-      ));
-      return notification.userId == currentUserId;
-    }).toList();
-
-    final newState = state.copyWith(
-      notifications: state.notifications.where((n) => n.userId != currentUserId).toList(),
-      unreadCount: 0,
-      shownNotificationIds: state.shownNotificationIds.where((id) => !userShownIds.contains(id)).toList(),
-    );
-
-    _persistState(newState);
-    emit(newState);
   }
 
   Future<void> _loadPersistedData() async {

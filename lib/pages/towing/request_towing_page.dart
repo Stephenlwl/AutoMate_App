@@ -703,12 +703,6 @@ class _EmergencyTowingPageState extends State<EmergencyTowingPage> {
               'paidAmount': null,
               'paidAt': null,
             },
-            'rating': {
-              'driverRating': null,
-              'serviceRating': null,
-              'comments': null,
-              'ratedAt': null,
-            },
           });
 
       if (mounted) {
